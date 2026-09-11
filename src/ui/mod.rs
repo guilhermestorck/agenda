@@ -4,6 +4,8 @@
 //! the one action that reaches out, and it does so through `runtime::spawn` so the window
 //! stays responsive for however long the user spends at Google's consent screen.
 
+pub mod week;
+
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -26,6 +28,7 @@ struct Ui {
     sidebar: gtk::Box,
     toasts: adw::ToastOverlay,
     connect_button: gtk::Button,
+    week: Rc<week::Week>,
 }
 
 pub fn build(app: &adw::Application) {
@@ -86,6 +89,7 @@ fn startup() -> anyhow::Result<gtk::Widget> {
         sidebar: gtk::Box::new(Orientation::Vertical, 0),
         toasts: adw::ToastOverlay::new(),
         connect_button: gtk::Button::with_label("Connect account"),
+        week: week::Week::new(),
     });
 
     let content = build_content(&ui);
@@ -104,6 +108,25 @@ fn build_content(ui: &Rc<Ui>) -> gtk::Widget {
     ui.connect_button
         .connect_clicked(move |_| start_connect(&clicked));
 
+    let navigation = gtk::Box::new(Orientation::Horizontal, 0);
+    navigation.add_css_class("linked");
+    let previous = gtk::Button::from_icon_name("go-previous-symbolic");
+    let next = gtk::Button::from_icon_name("go-next-symbolic");
+    navigation.append(&previous);
+    navigation.append(&next);
+    let today = gtk::Button::with_label("Today");
+
+    for (button, weeks) in [(&previous, -1_i64), (&next, 1)] {
+        let week = ui.week.clone();
+        button.connect_clicked(move |_| week.shift(weeks));
+    }
+    let week = ui.week.clone();
+    today.connect_clicked(move |_| week.go_to_today());
+
+    header.pack_end(&navigation);
+    header.pack_end(&today);
+    header.set_title_widget(Some(ui.week.title()));
+
     ui.sidebar.set_margin_top(6);
     ui.sidebar.set_margin_bottom(6);
     let sidebar_scroll = gtk::ScrolledWindow::builder()
@@ -112,17 +135,10 @@ fn build_content(ui: &Rc<Ui>) -> gtk::Widget {
         .child(&ui.sidebar)
         .build();
 
-    let week_placeholder = status(
-        "x-office-calendar-symbolic",
-        "The week view is not built yet",
-        "Connected accounts and their calendars appear on the left.",
-    );
-    week_placeholder.set_hexpand(true);
-
     let split = gtk::Box::new(Orientation::Horizontal, 0);
     split.append(&sidebar_scroll);
     split.append(&gtk::Separator::new(Orientation::Vertical));
-    split.append(&week_placeholder);
+    split.append(ui.week.widget());
 
     ui.toasts.set_child(Some(&split));
     let toolbar = adw::ToolbarView::new();
