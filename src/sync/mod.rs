@@ -778,6 +778,85 @@ mod incremental_tests {
     }
 
     #[tokio::test]
+    async fn being_offline_is_a_transient_failure_not_a_revoked_token() {
+        // SPEC §2.8: offline must not surface anything. Parking an account on "Reconnect"
+        // because the user is on a train would make them re-consent for nothing — and this
+        // is the difference between a sync that resumes on its own and one that needs them.
+        //
+        // A closed port is the same answer the network gives when it is not there:
+        // the connection is refused before any HTTP status exists to interpret.
+        let closed = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = probe.local_addr().unwrap().port();
+            drop(probe);
+            format!("http://127.0.0.1:{port}")
+        };
+
+        let store = store_with_two_accounts();
+        let mut session = Session::for_tests(
+            "work@example.com",
+            crate::config::Credentials {
+                client_id: "id".to_string(),
+                client_secret: "secret".to_string(),
+            },
+            crate::auth::keyring::Tokens {
+                access_token: "ya29".to_string(),
+                refresh_token: Some("1//r".to_string()),
+                expires_at: i64::MAX,
+            },
+            &closed,
+            &format!("{closed}/token"),
+        );
+
+        let report = sync_account(&mut session, &store).await.unwrap();
+        assert_eq!(report.synced, 0);
+        assert_eq!(report.failures.len(), 2, "both calendars failed");
+        assert!(
+            !report.needs_reconnect(),
+            "an unreachable network is not a revoked credential"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_sync_leaves_the_last_synced_events_alone() {
+        // The other half of §2.8: the week still paints, because nothing cleared it.
+        let store = store_with_two_accounts();
+        store
+            .lock()
+            .unwrap()
+            .upsert_event(&crate::store::Event {
+                account: "work@example.com".to_string(),
+                calendar_id: "primary".to_string(),
+                id: "synced_yesterday".to_string(),
+                ical_uid: Some("y@google.com".to_string()),
+                etag: None,
+                summary: "Synced before the network went away".to_string(),
+                description: None,
+                location: None,
+                start_utc: 1_789_371_000,
+                end_utc: 1_789_371_900,
+                timezone: None,
+                all_day: false,
+                rrule: None,
+                recurring_event_id: None,
+                original_start_utc: None,
+                status: "confirmed".to_string(),
+                updated_at: None,
+            })
+            .unwrap();
+
+        let fake = serve(vec![(500, "unreachable".to_string())]);
+        let mut session = session(&fake, "work@example.com");
+        let _ = sync_account(&mut session, &store).await.unwrap();
+
+        let events = store.lock().unwrap().events_in_range(0, i64::MAX).unwrap();
+        assert!(
+            events.iter().any(|e| e.id == "synced_yesterday"),
+            "a failed sync must never empty the grid"
+        );
+    }
+
+    #[tokio::test]
     async fn a_revoked_token_marks_the_account_for_reconnection() {
         // SPEC §2.11 in miniature: this is what tells the UI to show Reconnect for this
         // account and nothing else.
