@@ -1,0 +1,16 @@
+{
+  "kind": "calendar#calendarList",
+  "etag": "\"p32ofqk4tqfno30h\"",
+  "items": [
+    {
+      "kind": "calendar#calendarListEntry",
+      "etag": "\"1699999999996000\"",
+      "id": "c_second_page@group.calendar.google.com",
+      "summary": "On the second page",
+      "timeZone": "America/Sao_Paulo",
+      "backgroundColor": "#fa573c",
+      "accessRole": "reader",
+      "defaultReminders": []
+    }
+  ]
+}

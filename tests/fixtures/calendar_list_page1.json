@@ -1,0 +1,44 @@
+{
+  "kind": "calendar#calendarList",
+  "etag": "\"p32ofqk4tqfno30g\"",
+  "nextPageToken": "CigKGjRkYzM4ZjE2LTY",
+  "items": [
+    {
+      "kind": "calendar#calendarListEntry",
+      "etag": "\"1699999999999000\"",
+      "id": "personal@example.com",
+      "summary": "personal@example.com",
+      "timeZone": "Europe/Madrid",
+      "colorId": "14",
+      "backgroundColor": "#9fe1e7",
+      "foregroundColor": "#000000",
+      "selected": true,
+      "accessRole": "owner",
+      "defaultReminders": [{ "method": "popup", "minutes": 30 }],
+      "primary": true,
+      "conferenceProperties": { "allowedConferenceSolutionTypes": ["hangoutsMeet"] }
+    },
+    {
+      "kind": "calendar#calendarListEntry",
+      "etag": "\"1699999999998000\"",
+      "id": "es.spanish#holiday@group.v.calendar.google.com",
+      "summary": "Holidays in Spain",
+      "description": "Holidays and Observances in Spain",
+      "timeZone": "Europe/Madrid",
+      "colorId": "8",
+      "backgroundColor": "#16a765",
+      "foregroundColor": "#000000",
+      "selected": true,
+      "accessRole": "reader",
+      "defaultReminders": []
+    },
+    {
+      "kind": "calendar#calendarListEntry",
+      "etag": "\"1699999999997000\"",
+      "id": "c_shared123@group.calendar.google.com",
+      "summary": "Team",
+      "accessRole": "writer",
+      "defaultReminders": []
+    }
+  ]
+}

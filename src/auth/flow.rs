@@ -10,7 +10,9 @@ use super::keyring::Tokens;
 use super::{Pkce, Redirect, parse_redirect, random_token};
 
 const AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
-const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
+/// Overridable so the refresh-and-retry path can be exercised against a local server
+/// instead of being asserted about.
+pub const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 
 /// Full read/write. `calendar.readonly` would be a truer fit for v1, but the write path is
 /// deferred rather than abandoned, and widening a scope later forces every account to
@@ -219,13 +221,14 @@ pub async fn exchange_code(
 /// transient one it should treat alike.
 pub async fn refresh(
     client: &reqwest::Client,
+    token_endpoint: &str,
     account: &str,
     client_id: &str,
     client_secret: &str,
     refresh_token: &str,
 ) -> Result<Tokens> {
     let response = client
-        .post(TOKEN_ENDPOINT)
+        .post(token_endpoint)
         .form(&[
             ("client_id", client_id),
             ("client_secret", client_secret),
