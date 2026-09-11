@@ -332,6 +332,41 @@ impl Store {
         Ok(())
     }
 
+    /// Everything the week view might need for `[start_utc, end_utc)`, from every account,
+    /// excluding calendars the user has hidden.
+    ///
+    /// Three kinds of row qualify, and a plain range query would miss two of them:
+    ///
+    /// - a recurring master, whose own start is usually months before the window but whose
+    ///   occurrences are in it;
+    /// - an override or tombstone, which matters if *either* the occurrence it replaces or
+    ///   the time it moved to falls in the window;
+    /// - an ordinary event that overlaps.
+    pub fn events_for_window(&self, start_utc: i64, end_utc: i64) -> Result<Vec<Event>> {
+        let mut statement = self.conn.prepare(
+            "SELECT e.account, e.calendar_id, e.id, e.ical_uid, e.etag, e.summary,
+                    e.description, e.location, e.start_utc, e.end_utc, e.timezone, e.all_day,
+                    e.rrule, e.recurring_event_id, e.original_start_utc, e.status, e.updated_at
+             FROM events e
+             JOIN calendars c ON c.account = e.account AND c.id = e.calendar_id
+             WHERE c.visible = 1 AND (
+                     (e.recurring_event_id IS NOT NULL
+                      AND ((e.original_start_utc >= ?1 AND e.original_start_utc < ?2)
+                           OR (e.start_utc < ?2 AND e.end_utc > ?1)))
+                  OR (e.recurring_event_id IS NULL AND e.rrule IS NOT NULL
+                      AND e.start_utc < ?2)
+                  OR (e.recurring_event_id IS NULL AND e.rrule IS NULL
+                      AND e.start_utc < ?2 AND e.end_utc > ?1)
+                 )
+             ORDER BY e.start_utc",
+        )?;
+        let events = statement
+            .query_map(params![start_utc, end_utc], event_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("could not read the events for the window")?;
+        Ok(events)
+    }
+
     pub fn calendar(&self, account: &str, id: &str) -> Result<Option<Calendar>> {
         self.conn
             .query_row(

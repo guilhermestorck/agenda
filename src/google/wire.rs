@@ -172,10 +172,38 @@ pub fn map_event(
     calendar_timezone: Tz,
     wire: &WireEvent,
 ) -> Result<Mapped> {
-    if wire.status.as_deref() == Some("cancelled") {
-        return Ok(Mapped::Cancelled {
+    // A cancelled *instance* of a series is not a row to delete but a tombstone to keep.
+    // Google identifies it by recurringEventId and originalStartTime, and without those two
+    // stored, expansion would cheerfully reproduce the occurrence the user deleted.
+    let cancelled = wire.status.as_deref() == Some("cancelled");
+    if cancelled {
+        let (Some(master), Some(original)) = (&wire.recurring_event_id, &wire.original_start_time)
+        else {
+            return Ok(Mapped::Cancelled {
+                id: wire.id.clone(),
+            });
+        };
+        let (original_start_utc, all_day) = original.to_utc(calendar_timezone)?;
+        return Ok(Mapped::Store(Box::new(Event {
+            account: account.to_string(),
+            calendar_id: calendar_id.to_string(),
             id: wire.id.clone(),
-        });
+            ical_uid: wire.ical_uid.clone(),
+            etag: wire.etag.clone(),
+            summary: String::new(),
+            description: None,
+            location: None,
+            // A tombstone has no duration of its own; only the occurrence it cancels matters.
+            start_utc: original_start_utc,
+            end_utc: original_start_utc,
+            timezone: original.time_zone.clone(),
+            all_day,
+            rrule: None,
+            recurring_event_id: Some(master.clone()),
+            original_start_utc: Some(original_start_utc),
+            status: "cancelled".to_string(),
+            updated_at: None,
+        })));
     }
 
     let start = wire
@@ -520,6 +548,35 @@ mod event_tests {
             last.next_sync_token.as_deref(),
             Some("CJDFnbHF7YkDEJDFnbHF7YkDGAUg"),
             "this is the cursor the next incremental sync sends"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_instance_of_a_series_is_kept_as_a_tombstone() {
+        // Deleting the row instead would let the master's expansion cheerfully reproduce the
+        // very occurrence the user deleted.
+        const CANCELLED: &str = include_str!("../../tests/fixtures/events_cancelled_instance.json");
+        let page: EventsPage = serde_json::from_str(CANCELLED).unwrap();
+
+        let instance = stored(&page.items[0], MADRID);
+        assert_eq!(instance.status, "cancelled");
+        assert_eq!(instance.recurring_event_id.as_deref(), Some("master001"));
+        assert_eq!(
+            instance.original_start_utc,
+            Some(1_790_604_000),
+            "without the original start, nothing can tell which occurrence is gone"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_standalone_event_is_still_a_plain_deletion() {
+        const CANCELLED: &str = include_str!("../../tests/fixtures/events_cancelled_instance.json");
+        let page: EventsPage = serde_json::from_str(CANCELLED).unwrap();
+        assert_eq!(
+            map_event("work@example.com", "primary", MADRID, &page.items[1]).unwrap(),
+            Mapped::Cancelled {
+                id: "standalone_deleted".to_string()
+            }
         );
     }
 

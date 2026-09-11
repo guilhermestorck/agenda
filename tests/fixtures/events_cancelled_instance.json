@@ -1,0 +1,23 @@
+{
+  "kind": "calendar#events",
+  "etag": "\"p33o8k4tqfno30m\"",
+  "timeZone": "Europe/Madrid",
+  "accessRole": "owner",
+  "nextSyncToken": "CURSOR_AFTER_INSTANCE_CANCELLATION",
+  "items": [
+    {
+      "kind": "calendar#event",
+      "etag": "\"3400000000000300\"",
+      "id": "master001_20260928T140000Z",
+      "status": "cancelled",
+      "recurringEventId": "master001",
+      "originalStartTime": { "dateTime": "2026-09-28T16:00:00+02:00", "timeZone": "Europe/Madrid" }
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3400000000000301\"",
+      "id": "standalone_deleted",
+      "status": "cancelled"
+    }
+  ]
+}

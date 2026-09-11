@@ -15,6 +15,9 @@ use chrono_tz::{Tz, UTC};
 
 use crate::store::Event;
 
+mod window;
+pub use window::occurrences_in_window;
+
 /// A single concrete occurrence of an event, resolved to instants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Occurrence {
