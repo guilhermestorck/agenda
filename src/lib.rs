@@ -9,6 +9,7 @@ pub mod accounts;
 pub mod auth;
 pub mod config;
 pub mod google;
+pub mod recur;
 pub mod runtime;
 pub mod store;
 pub mod sync;
