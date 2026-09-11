@@ -14,6 +14,8 @@ use crate::store::CalendarMetadata;
 use super::wire::{CalendarListEntry, CalendarListPage, EventsPage, calendar_metadata};
 
 pub const API_BASE: &str = "https://www.googleapis.com/calendar/v3";
+/// OpenID Connect's userinfo endpoint, reachable with the `userinfo.profile` scope.
+pub const USERINFO_ENDPOINT: &str = "https://www.googleapis.com/oauth2/v3/userinfo";
 
 /// Google refused a `syncToken`: the cached cursor is too old to extend, and the only way
 /// forward is to drop it and resync in full. Typed because the caller must branch on it
@@ -209,6 +211,38 @@ impl Session {
     }
 }
 
+/// Google's profile for the signed-in account.
+///
+/// Only the two fields that reach the sidebar. Everything else the endpoint returns — `sub`,
+/// `given_name`, `locale` — is data about a person we have no use for and no reason to hold.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct UserInfo {
+    pub name: Option<String>,
+    pub picture: Option<String>,
+}
+
+/// Fetch the account's own profile. Never fatal: an account with no picture is an account
+/// with a monogram, not a connect that failed.
+pub async fn userinfo(
+    http: &reqwest::Client,
+    endpoint: &str,
+    access_token: &str,
+) -> Result<UserInfo> {
+    let response = http
+        .get(endpoint)
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .context("could not reach the userinfo endpoint")?;
+    if !response.status().is_success() {
+        bail!("userinfo returned {}", response.status());
+    }
+    response
+        .json()
+        .await
+        .context("the userinfo response was not readable")
+}
+
 /// Calendar ids are email addresses and group addresses containing `@` and `#`, which must
 /// not be taken for path or fragment syntax.
 fn urlencode(value: &str) -> String {
@@ -292,6 +326,33 @@ mod tests {
             },
         )
         .against(&fake.base, &format!("{}/token", fake.base))
+    }
+
+    #[tokio::test]
+    async fn a_profile_is_read_from_the_userinfo_endpoint() {
+        let fake = serve(vec![(
+            200,
+            r#"{"sub":"1","name":"Guilherme","given_name":"Guilherme","picture":"https://lh3.googleusercontent.com/a/x=s96-c","locale":"en"}"#
+                .to_string(),
+        )]);
+        let profile = userinfo(&reqwest::Client::new(), &fake.base, "ya29")
+            .await
+            .unwrap();
+        assert_eq!(profile.name.as_deref(), Some("Guilherme"));
+        assert!(profile.picture.as_deref().unwrap().starts_with("https://"));
+    }
+
+    #[tokio::test]
+    async fn a_profile_with_no_picture_is_still_a_profile() {
+        let fake = serve(vec![(
+            200,
+            r#"{"sub":"1","name":"No Picture"}"#.to_string(),
+        )]);
+        let profile = userinfo(&reqwest::Client::new(), &fake.base, "ya29")
+            .await
+            .unwrap();
+        assert_eq!(profile.name.as_deref(), Some("No Picture"));
+        assert_eq!(profile.picture, None);
     }
 
     #[test]

@@ -180,12 +180,17 @@ PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 PRAGMA synchronous = NORMAL;
 
--- Connected accounts, and the user's display preferences for each. Sync never writes
--- here: rows appear on connect and are edited only by the user.
+-- Connected accounts: the user's display preferences, plus the profile Google reports.
+-- Sync never writes here. Connect refreshes the two server-owned columns and nothing else;
+-- label, color and sort_order are the user's and are never overwritten.
 CREATE TABLE accounts (
     email       TEXT PRIMARY KEY,
     provider    TEXT NOT NULL DEFAULT 'google',
     added_at    INTEGER NOT NULL,
+    -- Server-owned, refreshed on connect: Google's own profile for this address, so the
+    -- sidebar can show a name and a face. Added 2026-09-11 with sign-off; no data existed.
+    display_name TEXT,
+    picture_url  TEXT,
     -- Short human label: "work" reads better in a sidebar than a 30-character address.
     label       TEXT,
     -- The account's marker colour, and the default fill for its calendars. Assigned from
@@ -279,7 +284,9 @@ that is what keeps the two dimensions independently readable.
 ### The rule that must not be broken
 
 **A sync must never overwrite `calendars.visible`, `calendars.user_color`, or any of
-`accounts.label` / `.color` / `.sort_order`.** Google knows nothing about these; they exist
+`accounts.label` / `.color` / `.sort_order`.** Since 2026-09-11 `accounts` also holds two
+server-owned columns (`display_name`, `picture_url`), so the same `DO UPDATE` discipline now
+applies to it: connect refreshes those two and names none of the user's. Google knows nothing about these; they exist
 only because the user set them, and a routine metadata refresh silently reverting a
 deliberate choice is the kind of bug that gets noticed weeks later and never reported
 properly.

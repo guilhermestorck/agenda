@@ -5,12 +5,17 @@
 -- Store::init — here they would be skipped by any future "schema already applied" guard,
 -- silently turning foreign keys off.
 
--- Connected accounts, and the user's display preferences for each. Sync never writes
--- here: rows appear on connect and are edited only by the user.
+-- Connected accounts: the user's display preferences, plus the profile Google reports.
+-- Sync never writes here. Connect refreshes only the two server-owned columns; label,
+-- color and sort_order belong to the user and are never overwritten.
 CREATE TABLE IF NOT EXISTS accounts (
     email       TEXT PRIMARY KEY,
     provider    TEXT NOT NULL DEFAULT 'google',
     added_at    INTEGER NOT NULL,
+    -- Server-owned, refreshed on connect: the profile Google holds for this address.
+    -- The user edits neither; they exist to put a face and a real name in the sidebar.
+    display_name TEXT,
+    picture_url  TEXT,
     -- Short human label: "work" reads better in a sidebar than a 30-character address.
     label       TEXT,
     -- The account's marker colour, and the default fill for its calendars. Assigned from

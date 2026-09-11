@@ -112,6 +112,8 @@ mod tests {
             label: None,
             color: color.map(str::to_string),
             sort_order: 0,
+            display_name: None,
+            picture_url: None,
         }
     }
 

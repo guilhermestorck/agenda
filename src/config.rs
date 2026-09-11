@@ -13,6 +13,7 @@ use anyhow::{Context, Result, bail};
 pub struct Paths {
     data_dir: PathBuf,
     config_dir: PathBuf,
+    cache_dir: PathBuf,
 }
 
 impl Paths {
@@ -22,7 +23,15 @@ impl Paths {
         Self {
             data_dir: xdg_base(xdg_data_home, home, ".local/share").join("agenda"),
             config_dir: xdg_base(xdg_config_home, home, ".config").join("agenda"),
+            cache_dir: xdg_base(None, home, ".cache").join("agenda"),
         }
+    }
+
+    /// Resolve with an explicit cache directory too. Separate from `new` because the cache
+    /// is the one directory that may be deleted at any time without losing anything.
+    pub fn with_cache(mut self, xdg_cache_home: Option<&str>, home: &Path) -> Self {
+        self.cache_dir = xdg_base(xdg_cache_home, home, ".cache").join("agenda");
+        self
     }
 
     pub fn from_env() -> Result<Self> {
@@ -30,11 +39,9 @@ impl Paths {
             .context("HOME is unset, so there is nowhere to look for agenda's files")?;
         let data = env::var("XDG_DATA_HOME").ok();
         let config = env::var("XDG_CONFIG_HOME").ok();
-        Ok(Self::new(
-            Path::new(&home),
-            data.as_deref(),
-            config.as_deref(),
-        ))
+        let cache = env::var("XDG_CACHE_HOME").ok();
+        let home = Path::new(&home);
+        Ok(Self::new(home, data.as_deref(), config.as_deref()).with_cache(cache.as_deref(), home))
     }
 
     /// The SQLite store — the only source of truth the UI reads.
@@ -45,6 +52,14 @@ impl Paths {
     /// The OAuth client the user creates themselves; see `docs/google-oauth-setup.md`.
     pub fn oauth(&self) -> PathBuf {
         self.config_dir.join("oauth.toml")
+    }
+
+    /// Where an account's profile picture is kept once downloaded.
+    ///
+    /// In the cache rather than the data directory: it is Google's copy of something Google
+    /// still holds, and deleting it costs nothing but a monogram until the next connect.
+    pub fn avatar(&self, email: &str) -> PathBuf {
+        self.cache_dir.join("avatars").join(filename_for(email))
     }
 }
 
@@ -115,6 +130,15 @@ impl Credentials {
             Err(error) => Err(error).with_context(|| format!("could not read {}", path.display())),
         }
     }
+}
+
+/// An address as a filename. Addresses contain '@' and can contain '/' in principle, and a
+/// path assembled from one unescaped is a path an attacker could choose.
+fn filename_for(email: &str) -> String {
+    email
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 /// The XDG base directory spec requires a value that is not an absolute path to be treated
@@ -196,6 +220,33 @@ mod tests {
         assert_eq!(
             paths.oauth(),
             PathBuf::from("/home/tester/.config/agenda/oauth.toml")
+        );
+    }
+
+    #[test]
+    fn the_avatar_cache_lives_under_the_cache_directory() {
+        let paths = Paths::new(&home(), None, None);
+        assert_eq!(
+            paths.avatar("work@example.com"),
+            PathBuf::from("/home/tester/.cache/agenda/avatars/work_example_com")
+        );
+    }
+
+    #[test]
+    fn an_address_cannot_escape_the_avatar_directory() {
+        // A path assembled from an unescaped address is a path someone else chooses.
+        let paths = Paths::new(&home(), None, None);
+        let hostile = paths.avatar("../../../../etc/passwd");
+        assert!(hostile.starts_with("/home/tester/.cache/agenda/avatars/"));
+        assert!(!hostile.to_string_lossy().contains(".."));
+    }
+
+    #[test]
+    fn xdg_cache_home_overrides_the_default_cache_directory() {
+        let paths = Paths::new(&home(), None, None).with_cache(Some("/run/cache"), &home());
+        assert_eq!(
+            paths.avatar("a@b.com"),
+            PathBuf::from("/run/cache/agenda/avatars/a_b_com")
         );
     }
 

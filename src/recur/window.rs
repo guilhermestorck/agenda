@@ -81,7 +81,7 @@ mod tests {
     use chrono::TimeZone;
     use chrono_tz::Tz;
 
-    use crate::store::CalendarMetadata;
+    use crate::store::{CalendarMetadata, Profile};
 
     const MADRID: Tz = chrono_tz::Europe::Madrid;
 
@@ -128,6 +128,7 @@ mod tests {
                     email,
                     color,
                     1,
+                    &Profile::default(),
                     &[CalendarMetadata {
                         account: email.to_string(),
                         id: "primary".to_string(),

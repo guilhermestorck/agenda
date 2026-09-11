@@ -14,10 +14,15 @@ const AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 /// instead of being asserted about.
 pub const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 
-/// Full read/write. `calendar.readonly` would be a truer fit for v1, but the write path is
-/// deferred rather than abandoned, and widening a scope later forces every account to
-/// re-consent.
-const SCOPE: &str = "https://www.googleapis.com/auth/calendar";
+/// Full calendar read/write, plus the account's own profile.
+///
+/// `calendar.readonly` would be a truer fit for v1, but the write path is deferred rather
+/// than abandoned, and widening a scope later forces every account to re-consent.
+/// `userinfo.profile` is here for the same reason: it supplies the name and picture the
+/// sidebar shows, and adding it once accounts exist would cost every one of them a
+/// re-consent. It grants no access to anyone's data but the signed-in account's own profile.
+const SCOPE: &str = "https://www.googleapis.com/auth/calendar \
+                     https://www.googleapis.com/auth/userinfo.profile";
 
 /// Google has permanently rejected the refresh token: the account must consent again and no
 /// retry helps. Typed because the caller must branch on it (SPEC §7) — this is the
@@ -296,6 +301,20 @@ mod tests {
     fn the_authorization_url_percent_encodes_the_scope() {
         let url = authorization_url("client", "http://127.0.0.1:1234", &pkce(), "state").unwrap();
         assert!(url.contains("scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar"));
+    }
+
+    #[test]
+    fn the_scope_asks_for_the_profile_and_nothing_further() {
+        // A scope list that drifts wider than it needs to is the kind of thing a user
+        // notices on the consent screen and rightly distrusts.
+        let scopes: Vec<&str> = SCOPE.split_whitespace().collect();
+        assert_eq!(
+            scopes,
+            vec![
+                "https://www.googleapis.com/auth/calendar",
+                "https://www.googleapis.com/auth/userinfo.profile",
+            ]
+        );
     }
 
     #[test]

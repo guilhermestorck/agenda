@@ -11,9 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 
 use crate::auth::{self, Redirect};
-use crate::config::Credentials;
-use crate::google::Session;
-use crate::store::{CalendarMetadata, Store};
+use crate::config::{Credentials, Paths};
+use crate::google::{Session, userinfo};
+use crate::store::{CalendarMetadata, Profile, Store};
 
 /// Marker colours, assigned in order as accounts are connected, so a newly connected
 /// account is never unmarked (SPEC §4). Drawn from the Adwaita palette and ordered for
@@ -138,10 +138,30 @@ pub async fn connect(store: Arc<Mutex<Store>>, credentials: Credentials) -> Resu
         })
         .collect();
 
+    // Never fatal. An account whose profile could not be fetched is an account with a
+    // monogram, not a connect that failed — and the picture is the least important thing
+    // about it.
+    let profile = match userinfo(
+        &http,
+        crate::google::client::USERINFO_ENDPOINT,
+        &session.tokens.access_token,
+    )
+    .await
+    {
+        Ok(info) => Profile {
+            display_name: info.name,
+            picture_url: info.picture,
+        },
+        Err(error) => {
+            tracing::warn!(error = %format!("{error:#}"), "could not read the account profile");
+            Profile::default()
+        }
+    };
+
     {
         let mut store = store.lock().expect("the store lock was poisoned");
         let color = palette_color(store.account_count()?);
-        store.connect_account(&email, color, now_unix(), &calendars)?;
+        store.connect_account(&email, color, now_unix(), &profile, &calendars)?;
     }
 
     if let Err(error) = auth::keyring::store(&email, &session.tokens).await {
@@ -154,11 +174,56 @@ pub async fn connect(store: Arc<Mutex<Store>>, credentials: Credentials) -> Resu
         return Err(error.context("the account was not connected"));
     }
 
+    if let Some(url) = profile.picture_url.as_deref() {
+        // Best effort, and after the account is safely stored: a picture that will not
+        // download is a monogram, not a failed connect.
+        if let Err(error) = cache_avatar(&http, &email, url).await {
+            tracing::warn!(error = %format!("{error:#}"), "could not cache the profile picture");
+        }
+    }
+
     tracing::info!(%email, calendars = calendars.len(), "connected an account");
     Ok(Connected::Account {
         email,
         calendars: calendars.len(),
     })
+}
+
+/// Google's avatars are a few kilobytes. A ceiling anyway, because the URL comes from a
+/// server and a response with no end is a response that fills the disk.
+const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
+
+/// Download an account's picture into the cache, so the UI can draw it without a network
+/// call (SPEC §6: no widget awaits the network).
+async fn cache_avatar(http: &reqwest::Client, email: &str, url: &str) -> Result<()> {
+    let path = Paths::from_env()?.avatar(email);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("could not create {}", parent.display()))?;
+    }
+
+    let response = http
+        .get(url)
+        .send()
+        .await
+        .context("could not fetch the profile picture")?;
+    if !response.status().is_success() {
+        bail!("the profile picture returned {}", response.status());
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .context("could not read the profile picture")?;
+    if bytes.len() > MAX_AVATAR_BYTES {
+        bail!(
+            "the profile picture is {} bytes, which is not a profile picture",
+            bytes.len()
+        );
+    }
+
+    std::fs::write(&path, &bytes).with_context(|| format!("could not write {}", path.display()))?;
+    tracing::debug!(path = %path.display(), bytes = bytes.len(), "cached a profile picture");
+    Ok(())
 }
 
 /// Hand the URL to the desktop rather than picking a browser. `xdg-open` is what every
@@ -225,7 +290,13 @@ mod tests {
             calendar("work@example.com", "team", false),
         ];
         store
-            .connect_account("work@example.com", "#3584e4", 1_700_000_000, &calendars)
+            .connect_account(
+                "work@example.com",
+                "#3584e4",
+                1_700_000_000,
+                &Profile::default(),
+                &calendars,
+            )
             .unwrap();
 
         assert_eq!(store.account_count().unwrap(), 1);
@@ -248,7 +319,13 @@ mod tests {
             calendar("somebody-else@example.com", "team", false),
         ];
         store
-            .connect_account("work@example.com", "#3584e4", 1_700_000_000, &calendars)
+            .connect_account(
+                "work@example.com",
+                "#3584e4",
+                1_700_000_000,
+                &Profile::default(),
+                &calendars,
+            )
             .expect_err("the foreign key must fail the whole transaction");
 
         assert_eq!(
@@ -272,6 +349,7 @@ mod tests {
                 "personal@example.com",
                 palette_color(0),
                 1,
+                &Profile::default(),
                 &[calendar(
                     "personal@example.com",
                     "personal@example.com",
@@ -284,6 +362,7 @@ mod tests {
                 "work@example.com",
                 palette_color(1),
                 2,
+                &Profile::default(),
                 &[calendar("work@example.com", "work@example.com", true)],
             )
             .unwrap();

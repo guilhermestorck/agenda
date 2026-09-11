@@ -238,7 +238,7 @@ mod tests {
 
     use crate::auth::keyring::Tokens;
     use crate::config::Credentials;
-    use crate::store::CalendarMetadata;
+    use crate::store::{CalendarMetadata, Profile};
 
     const PAGE1: &str = include_str!("../../tests/fixtures/events_page1.json");
     const PAGE2: &str = include_str!("../../tests/fixtures/events_page2.json");
@@ -291,6 +291,7 @@ mod tests {
                     email,
                     color,
                     1,
+                    &Profile::default(),
                     &[CalendarMetadata {
                         account: email.to_string(),
                         id: "primary".to_string(),

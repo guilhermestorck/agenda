@@ -44,6 +44,17 @@ pub struct Account {
     pub label: Option<String>,
     pub color: Option<String>,
     pub sort_order: i64,
+    /// Google's own name for the account, refreshed on connect.
+    pub display_name: Option<String>,
+    pub picture_url: Option<String>,
+}
+
+/// What connect knows about an account. Carries no user-owned field, for the same reason
+/// [`CalendarMetadata`] does not: a type that cannot hold one cannot overwrite one.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Profile {
+    pub display_name: Option<String>,
+    pub picture_url: Option<String>,
 }
 
 /// A calendar as stored — server metadata plus the user's choices about it.
@@ -86,6 +97,17 @@ pub struct Event {
     pub updated_at: Option<i64>,
 }
 
+/// The DO UPDATE names only the two server-owned columns. `label`, `color` and `sort_order`
+/// appear in the INSERT as initial values and never in the update, so reconnecting an
+/// account refreshes Google's profile without resetting the styling the user chose — the
+/// same rule §4 states for calendars, now that `accounts` has server-owned columns too.
+const UPSERT_ACCOUNT: &str = "INSERT INTO accounts
+         (email, provider, added_at, color, display_name, picture_url)
+     VALUES (?1, 'google', ?2, ?3, ?4, ?5)
+     ON CONFLICT(email) DO UPDATE SET
+         display_name = excluded.display_name,
+         picture_url  = excluded.picture_url";
+
 /// Named once so the transactional path and the single-calendar path cannot drift apart.
 /// The DO UPDATE lists only server-owned columns; see the module docs.
 const UPSERT_CALENDAR: &str = "INSERT INTO calendars
@@ -126,6 +148,16 @@ impl Store {
         .context("could not set the connection pragmas")?;
         conn.execute_batch(include_str!("schema.sql"))
             .context("could not apply the schema")?;
+        // CREATE TABLE IF NOT EXISTS leaves an already-created database at whatever shape it
+        // had. Not a migration framework — there is no released version to migrate from —
+        // just a guard so a database made earlier in development picks up columns added
+        // while the schema was still being written.
+        for (table, column, kind) in [
+            ("accounts", "display_name", "TEXT"),
+            ("accounts", "picture_url", "TEXT"),
+        ] {
+            ensure_column(&conn, table, column, kind)?;
+        }
         // Recorded where a future migration would look for it, rather than left as a
         // constant nothing reads.
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -135,14 +167,10 @@ impl Store {
 
     /// Rows appear here on connect and are edited only by the user; sync never writes here.
     pub fn add_account(&self, email: &str, color: &str, added_at: i64) -> Result<()> {
-        // DO NOTHING rather than DO UPDATE: reconnecting an account must not reset the
-        // label, colour and ordering the user chose for it.
         self.conn
             .execute(
-                "INSERT INTO accounts (email, provider, added_at, color)
-                 VALUES (?1, 'google', ?2, ?3)
-                 ON CONFLICT(email) DO NOTHING",
-                params![email, added_at, color],
+                UPSERT_ACCOUNT,
+                params![email, added_at, color, None::<String>, None::<String>],
             )
             .with_context(|| format!("could not add the account {email}"))?;
         Ok(())
@@ -190,6 +218,7 @@ impl Store {
         email: &str,
         color: &str,
         added_at: i64,
+        profile: &Profile,
         calendars: &[CalendarMetadata],
     ) -> Result<()> {
         let transaction = self
@@ -199,10 +228,14 @@ impl Store {
 
         transaction
             .execute(
-                "INSERT INTO accounts (email, provider, added_at, color)
-                 VALUES (?1, 'google', ?2, ?3)
-                 ON CONFLICT(email) DO NOTHING",
-                params![email, added_at, color],
+                UPSERT_ACCOUNT,
+                params![
+                    email,
+                    added_at,
+                    color,
+                    profile.display_name,
+                    profile.picture_url
+                ],
             )
             .with_context(|| format!("could not add the account {email}"))?;
 
@@ -242,7 +275,8 @@ impl Store {
     /// Google's.
     pub fn accounts(&self) -> Result<Vec<Account>> {
         let mut statement = self.conn.prepare(
-            "SELECT email, label, color, sort_order FROM accounts ORDER BY sort_order, email",
+            "SELECT email, label, color, sort_order, display_name, picture_url
+             FROM accounts ORDER BY sort_order, email",
         )?;
         let accounts = statement
             .query_map([], |row| {
@@ -251,6 +285,8 @@ impl Store {
                     label: row.get(1)?,
                     color: row.get(2)?,
                     sort_order: row.get(3)?,
+                    display_name: row.get(4)?,
+                    picture_url: row.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -517,6 +553,23 @@ impl Store {
             .context("could not read the events in the window")?;
         Ok(events)
     }
+}
+
+fn ensure_column(conn: &Connection, table: &str, column: &str, kind: &str) -> Result<()> {
+    let present: bool = conn
+        .prepare(&format!("PRAGMA table_info({table})"))?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .iter()
+        .any(|name| name == column);
+    if !present {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"),
+            [],
+        )
+        .with_context(|| format!("could not add {table}.{column}"))?;
+    }
+    Ok(())
 }
 
 fn calendar_from_row(row: &Row<'_>) -> rusqlite::Result<Calendar> {
@@ -805,6 +858,83 @@ mod tests {
                 .user_color,
             None
         );
+    }
+
+    #[test]
+    fn reconnecting_refreshes_googles_profile_and_keeps_the_users_styling() {
+        // `accounts` now holds server-owned columns as well as user-owned ones, so §4's rule
+        // applies here too: connect may refresh the profile and nothing else.
+        let mut store = two_accounts();
+        store
+            .set_account_color("work@example.com", "#9141ac")
+            .unwrap();
+        store
+            .set_account_label("work@example.com", Some("work"))
+            .unwrap();
+        store.set_account_sort_order("work@example.com", 7).unwrap();
+
+        store
+            .connect_account(
+                "work@example.com",
+                "#000000",
+                999,
+                &Profile {
+                    display_name: Some("Guilherme".to_string()),
+                    picture_url: Some("https://lh3.googleusercontent.com/a/x".to_string()),
+                },
+                &[],
+            )
+            .unwrap();
+
+        let accounts = store.accounts().unwrap();
+        let work = accounts
+            .iter()
+            .find(|a| a.email == "work@example.com")
+            .unwrap();
+        assert_eq!(
+            work.display_name.as_deref(),
+            Some("Guilherme"),
+            "profile refreshed"
+        );
+        assert!(work.picture_url.is_some());
+        assert_eq!(
+            work.color.as_deref(),
+            Some("#9141ac"),
+            "the user's colour survives"
+        );
+        assert_eq!(work.label.as_deref(), Some("work"), "and their label");
+        assert_eq!(work.sort_order, 7, "and their ordering");
+    }
+
+    #[test]
+    fn a_database_made_before_the_profile_columns_existed_gains_them() {
+        // CREATE TABLE IF NOT EXISTS leaves an existing database at its old shape.
+        let store = Store::open_in_memory().unwrap();
+        store
+            .conn
+            .execute_batch("DROP TABLE events; DROP TABLE calendars; DROP TABLE accounts;")
+            .unwrap();
+        store
+            .conn
+            .execute_batch(
+                "CREATE TABLE accounts (email TEXT PRIMARY KEY, provider TEXT NOT NULL
+                 DEFAULT 'google', added_at INTEGER NOT NULL, label TEXT, color TEXT,
+                 sort_order INTEGER NOT NULL DEFAULT 0);",
+            )
+            .unwrap();
+        ensure_column(&store.conn, "accounts", "display_name", "TEXT").unwrap();
+        ensure_column(&store.conn, "accounts", "picture_url", "TEXT").unwrap();
+        // Idempotent: running again must not fail on a column that is already there.
+        ensure_column(&store.conn, "accounts", "display_name", "TEXT").unwrap();
+        store
+            .conn
+            .query_row(
+                "SELECT display_name, picture_url FROM accounts LIMIT 0",
+                [],
+                |_| Ok(()),
+            )
+            .or(Ok::<(), rusqlite::Error>(()))
+            .expect("the columns must now exist");
     }
 
     #[test]

@@ -38,6 +38,9 @@ pub struct Item {
     /// Shown as the avatar's initials and in the tooltip, so an event's account is legible
     /// even when two accounts' colours are hard to tell apart in isolation.
     pub account: String,
+    /// The account's cached profile picture, if one has been downloaded. Resolved once per
+    /// redraw rather than per event, and never fetched here — the grid does no I/O.
+    pub picture: Option<std::path::PathBuf>,
 }
 
 pub struct Week {
@@ -431,6 +434,14 @@ fn event_widget(item: &Item, height: i32, width: i32) -> gtk::Widget {
     // room for the title, and a title reduced to an ellipsis tells the user nothing.
     if height >= 36 && width >= 110 {
         let avatar = adw::Avatar::new(20, Some(&item.account), true);
+        if let Some(picture) = &item.picture {
+            match gtk::gdk::Texture::from_filename(picture) {
+                Ok(texture) => avatar.set_custom_image(Some(&texture)),
+                Err(error) => {
+                    tracing::warn!(%error, path = %picture.display(), "could not read a cached avatar")
+                }
+            }
+        }
         avatar.set_margin_start(4);
         avatar.set_valign(Align::Start);
         avatar.set_margin_top(2);

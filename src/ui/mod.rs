@@ -244,7 +244,15 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         }
         heading.append(&account_color);
 
-        let name = gtk::Label::new(Some(account.label.as_deref().unwrap_or(&account.email)));
+        heading.append(&avatar_for(&account, 24));
+
+        let name = gtk::Label::new(Some(
+            account
+                .label
+                .as_deref()
+                .or(account.display_name.as_deref())
+                .unwrap_or(&account.email),
+        ));
         name.add_css_class("heading");
         name.set_halign(Align::Start);
         name.set_hexpand(true);
@@ -437,6 +445,16 @@ fn collect_items(ui: &Rc<Ui>, from: i64, to: i64) -> anyhow::Result<Vec<week::It
         }
     }
 
+    // One filesystem check per account, not per event.
+    let paths = Paths::from_env().ok();
+    let pictures: HashMap<String, std::path::PathBuf> = accounts
+        .keys()
+        .filter_map(|email| {
+            let path = paths.as_ref()?.avatar(email);
+            path.exists().then_some((email.clone(), path))
+        })
+        .collect();
+
     let occurrences = occurrences_in_window(&store, from, to)?;
     Ok(occurrences
         .into_iter()
@@ -459,10 +477,39 @@ fn collect_items(ui: &Rc<Ui>, from: i64, to: i64) -> anyhow::Result<Vec<week::It
                 account: account
                     .label
                     .clone()
+                    .or_else(|| account.display_name.clone())
                     .unwrap_or_else(|| account.email.clone()),
+                picture: pictures.get(&account.email).cloned(),
             })
         })
         .collect())
+}
+
+/// The account's picture if one has been cached, its initials otherwise.
+///
+/// Falling back rather than waiting: a cache that is not there yet is a monogram, never a
+/// blank space and never a network call from a paint.
+pub fn avatar_for(account: &crate::store::Account, size: i32) -> adw::Avatar {
+    let shown = account
+        .label
+        .as_deref()
+        .or(account.display_name.as_deref())
+        .unwrap_or(&account.email);
+    let avatar = adw::Avatar::new(size, Some(shown), true);
+    avatar.set_valign(Align::Center);
+
+    if let Ok(paths) = Paths::from_env() {
+        let path = paths.avatar(&account.email);
+        if path.exists() {
+            match gtk::gdk::Texture::from_filename(&path) {
+                Ok(texture) => avatar.set_custom_image(Some(&texture)),
+                Err(error) => {
+                    tracing::warn!(%error, path = %path.display(), "could not read a cached avatar")
+                }
+            }
+        }
+    }
+    avatar
 }
 
 /// `#RRGGBB` for a colour the user picked. Alpha is dropped: a translucent event on a
