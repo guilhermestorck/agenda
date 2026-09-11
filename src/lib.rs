@@ -5,5 +5,6 @@
 //! unfinished wiring; a library lets a finished, tested module wait for its consumer
 //! without either a suppression or a warning.
 
+pub mod auth;
 pub mod config;
 pub mod store;
