@@ -1,0 +1,32 @@
+target/
+*.tmp
+gir/gir-files/
+.cargo/
+migration-backup/
+oauth.toml
+*.secret
+
+# Credentials — belt and braces. Google Console downloads its OAuth client as
+# client_secret_<id>.apps.googleusercontent.com.json; never let that land here.
+client_secret*.json
+credentials*.json
+*.pem
+*.key
+*.p12
+.env
+.env.*
+
+# Local data: the real database lives in ~/.local/share/agenda/, but a stray copy
+# made while debugging would contain real calendar contents.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Exported/imported calendar data is personal.
+*.ics
+PLAN.md
+
+# The task plan is a working record, same category as PLAN.md: local, not published.
+tasks/
