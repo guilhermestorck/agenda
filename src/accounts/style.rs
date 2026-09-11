@@ -20,16 +20,22 @@ pub struct Colors {
 
 /// Resolve both, per SPEC §4.
 ///
-/// Fill: the user's per-calendar override, then the account's colour, then Google's colour
-/// for the calendar, then a generated fallback. Calendar beats account, because a choice
-/// made about one calendar is more specific than a default set for all of them.
+/// Fill: the user's per-calendar override, then Google's colour for the calendar, then the
+/// account's colour, then a generated fallback.
+///
+/// The account's colour sits *below* Google's deliberately, and §4 was corrected on
+/// 2026-09-11 to say so. Above it, an account colour — which every account is assigned on
+/// connect — became the fill of every one of its calendars, so fill and marker were the same
+/// colour and the two cues collapsed into one. That is precisely what §1 keeps apart: the
+/// fill says which calendar, the marker says which account, and they have to stay readable
+/// independently.
 pub fn resolve(account: &Account, calendar: &Calendar) -> Colors {
     let marker = marker_for(account);
     let fill = calendar
         .user_color
         .clone()
-        .or_else(|| account.color.clone())
         .or_else(|| calendar.color.clone())
+        .or_else(|| account.color.clone())
         .unwrap_or_else(|| generated(&format!("{}/{}", calendar.account, calendar.id)));
     Colors { fill, marker }
 }
@@ -173,21 +179,28 @@ mod tests {
     }
 
     #[test]
-    fn without_an_override_the_account_colour_is_the_default_fill() {
+    fn googles_calendar_colour_is_the_fill_when_the_user_has_set_no_override() {
+        // The account has a colour — every account does, assigned on connect — and it must
+        // not swallow the calendar's. Above Google's in the chain, every event on the
+        // account ends up one flat colour and the calendar dimension disappears.
         let colors = resolve(
             &account("work@example.com", Some("#e66100")),
             &calendar("work@example.com", "team", Some("#16a765"), None),
         );
-        assert_eq!(colors.fill, "#e66100");
+        assert_eq!(colors.fill, "#16a765");
+        assert_eq!(
+            colors.marker, "#e66100",
+            "and the marker is still the account's"
+        );
     }
 
     #[test]
-    fn googles_colour_is_used_only_when_the_user_has_expressed_nothing() {
+    fn the_account_colour_fills_a_calendar_google_gave_none() {
         let colors = resolve(
-            &account("work@example.com", None),
-            &calendar("work@example.com", "team", Some("#16a765"), None),
+            &account("work@example.com", Some("#e66100")),
+            &calendar("work@example.com", "team", None, None),
         );
-        assert_eq!(colors.fill, "#16a765");
+        assert_eq!(colors.fill, "#e66100");
     }
 
     #[test]
@@ -247,19 +260,36 @@ mod tests {
     }
 
     #[test]
-    fn setting_an_account_colour_moves_only_the_calendars_that_have_no_override() {
+    fn setting_an_account_colour_moves_only_what_has_no_colour_of_its_own() {
         let before = account("work@example.com", Some("#e66100"));
         let after = account("work@example.com", Some("#9141ac"));
-        let plain = calendar("work@example.com", "a", None, None);
-        let overridden = calendar("work@example.com", "b", None, Some("#ff0000"));
+        let colourless = calendar("work@example.com", "a", None, None);
+        let from_google = calendar("work@example.com", "b", Some("#16a765"), None);
+        let overridden = calendar("work@example.com", "c", None, Some("#ff0000"));
 
-        assert_eq!(resolve(&before, &plain).fill, "#e66100");
-        assert_eq!(resolve(&after, &plain).fill, "#9141ac");
-        assert_eq!(resolve(&before, &overridden).fill, "#ff0000");
+        assert_eq!(resolve(&before, &colourless).fill, "#e66100");
+        assert_eq!(resolve(&after, &colourless).fill, "#9141ac");
+        assert_eq!(
+            resolve(&after, &from_google).fill,
+            "#16a765",
+            "a calendar with its own colour keeps it"
+        );
         assert_eq!(
             resolve(&after, &overridden).fill,
             "#ff0000",
             "a deliberate per-calendar choice must not move when the default does"
         );
+    }
+
+    #[test]
+    fn the_fill_and_the_marker_stay_different_colours_by_default() {
+        // The regression this file exists to prevent: fill and marker collapsing into one,
+        // which makes the stripe invisible and throws away the calendar dimension.
+        let account = account("work@example.com", Some("#e66100"));
+        let colors = resolve(
+            &account,
+            &calendar("work@example.com", "team", Some("#16a765"), None),
+        );
+        assert_ne!(colors.fill, colors.marker);
     }
 }

@@ -7,11 +7,13 @@ done without asking.
 Status of this document: v1 scope agreed 2026-09-10. PLAN.md's M0–M10 is the long road;
 this spec fences off the part that has to work before the calendar is usable daily.
 
-**Nothing is implemented.** The repository was reset to zero commits on 2026-09-10 and now
-holds only this spec, PLAN.md, `.gitignore` and `docs/`. Everything below describes what is
-to be built, not what exists — the one exception being PLAN.md's "Verified on this machine"
-notes, which record real probes of the environment (ksecretd, Adwaita under Wayland) and
-still hold.
+**Implementation status (2026-09-11).** The repository was reset to zero commits on
+2026-09-10. Built since: `auth`, `store`, `sync`, `accounts`, `recur`, and the week grid.
+Not yet built: the settings surfaces, the background sync loop, `notify` and `tray`.
+Everything Google-facing is verified against recorded fixtures and a local stand-in server;
+**nothing in this project has yet made a request to Google**, because no account has been
+connected. Where a criterion below has been met only against fixtures or a synthetic
+database, `tasks/todo.md` says so rather than implying coverage that does not exist (§9).
 
 ---
 
@@ -86,7 +88,12 @@ v1 is done when **all** of the following hold on the target machine:
 2. **The week is accurate.** The week view matches Google Calendar's own web UI for the
    same week, including: recurring series, single modified instances of a series, all-day
    events on the correct day, events spanning midnight, and a week containing a DST
-   transition in `Europe/Madrid` and `America/Sao_Paulo`.
+   transition in `Europe/Madrid` — the zone this machine runs in and the one that matters.
+   *(Corrected 2026-09-11: this criterion originally also demanded a DST week in
+   `America/Sao_Paulo`. Brazil abolished daylight saving in 2019 and the zone has been a
+   flat `-03:00` ever since, so no current date satisfies it. São Paulo is still tested, at
+   its real historical transitions in November 2018 and February 2019, which exercises the
+   same code against genuine offset changes.)*
 3. **Every account is on screen at once.** With at least three Google accounts connected
    (two personal, one professional), one week view shows events from all of them
    simultaneously. No account switcher, no filter that must be changed to see the rest.
@@ -258,9 +265,12 @@ it must group by `(ical_uid, start_utc)` at minimum, never treat it as an identi
 
 ### Colour resolution
 
-- **Event fill:** `calendars.user_color` → `account_display.color` → `calendars.color`
-  (Google's) → a generated fallback.
-- **Account marker:** `account_display.color` → a colour auto-assigned from a palette when
+- **Event fill:** `calendars.user_color` → `calendars.color` (Google's) →
+  `accounts.color` → a generated fallback. *(Corrected 2026-09-11: the account colour was
+  above Google's, which contradicted §1. Every account is assigned a colour on connect, so
+  above Google's it became the fill of every calendar on the account — collapsing fill and
+  marker into one colour and discarding the calendar dimension entirely.)*
+- **Account marker:** `accounts.color` → a colour auto-assigned from a palette when
   the account is added, so a newly connected account is never unmarked.
 
 Calendar beats account, per §1. The marker is always the account's, never the calendar's —
