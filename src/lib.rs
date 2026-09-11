@@ -13,4 +13,5 @@ pub mod recur;
 pub mod runtime;
 pub mod store;
 pub mod sync;
+pub mod tray;
 pub mod ui;

@@ -26,6 +26,7 @@ use crate::recur::occurrences_in_window;
 use crate::runtime;
 use crate::store::Store;
 use crate::sync::scheduler;
+use crate::tray;
 
 /// Built once and shared with every callback that needs to redraw.
 ///
@@ -42,6 +43,8 @@ struct Ui {
     /// Accounts Google has permanently rejected. Held in memory, not the store: it is a fact
     /// about right now, and a restart should find out for itself rather than trust a flag.
     needs_reconnect: RefCell<HashSet<String>>,
+    /// `None` when no StatusNotifierItem host answered. The window works regardless.
+    tray: RefCell<Option<ksni::blocking::Handle<tray::Item>>>,
 }
 
 pub fn build(app: &adw::Application) {
@@ -104,12 +107,14 @@ fn startup() -> anyhow::Result<gtk::Widget> {
         connect_button: gtk::Button::with_label("Connect account"),
         week: week::Week::new(),
         needs_reconnect: RefCell::new(HashSet::new()),
+        tray: RefCell::new(None),
     });
 
     let content = build_content(&ui);
     refresh_sidebar(&ui);
     refresh_week(&ui);
     start_syncing(&ui, scheduler::MIN_INTERVAL);
+    start_tray(&ui);
     Ok(content)
 }
 
@@ -425,6 +430,94 @@ fn read_groups(ui: &Rc<Ui>) -> anyhow::Result<Vec<Group>> {
         .collect()
 }
 
+/// Put agenda in the system tray, and act on what the user does there.
+///
+/// A missing tray is not a failure: some sessions have no StatusNotifierItem host, and the
+/// window is perfectly usable without one.
+fn start_tray(ui: &Rc<Ui>) {
+    let (handle, requests) = match tray::start(tray_line(ui)) {
+        Ok(started) => started,
+        Err(error) => {
+            tracing::warn!(error = %format!("{error:#}"), "no system tray; carrying on without one");
+            return;
+        }
+    };
+    *ui.tray.borrow_mut() = Some(handle);
+
+    // The tray runs on its own thread and must never touch a widget, so it posts requests
+    // and the main loop acts on them.
+    let pump = ui.clone();
+    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        let ui = &pump;
+        while let Ok(request) = requests.try_recv() {
+            match request {
+                tray::Request::ToggleWindow => toggle_window(ui),
+                tray::Request::Quit => {
+                    if let Some(app) = ui
+                        .toasts
+                        .root()
+                        .and_downcast::<gtk::Window>()
+                        .and_then(|window| window.application())
+                    {
+                        app.quit();
+                    }
+                }
+            }
+        }
+        glib::ControlFlow::Continue
+    });
+
+    refresh_tray(ui);
+}
+
+fn toggle_window(ui: &Rc<Ui>) {
+    let Some(window) = ui.toasts.root().and_downcast::<gtk::Window>() else {
+        return;
+    };
+    if window.is_visible() {
+        window.set_visible(false);
+    } else {
+        window.present();
+    }
+}
+
+/// What the tray should say, for the week now loaded.
+fn tray_line(ui: &Rc<Ui>) -> String {
+    let now = chrono::Utc::now().timestamp();
+    let occurrences = match ui.store.lock() {
+        // A generous horizon: the next thing on the calendar may well be next week.
+        Ok(store) => occurrences_in_window(&store, now, now + 14 * 24 * 3600).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    tray::next_event(&occurrences, now)
+        .describe(ui.week.zone(), tray::next_start(&occurrences, now))
+}
+
+/// Redraw the tray, and arrange to do it again when the answer next changes.
+fn refresh_tray(ui: &Rc<Ui>) {
+    let line = tray_line(ui);
+    if let Some(handle) = ui.tray.borrow().as_ref() {
+        let line = line.clone();
+        handle.update(move |item| item.set_line(line));
+    }
+
+    // Scheduled for the moment the answer changes rather than on a tick, so a tray showing
+    // "in 3 hours" is not redrawing every second to say the same thing.
+    let now = chrono::Utc::now().timestamp();
+    let occurrences = match ui.store.lock() {
+        Ok(store) => occurrences_in_window(&store, now, now + 14 * 24 * 3600).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    let wake_in = tray::next_change(&occurrences, now)
+        .map(|instant| (instant - now).clamp(1, 3_600))
+        .unwrap_or(3_600);
+
+    let ui = ui.clone();
+    glib::timeout_add_local_once(std::time::Duration::from_secs(wake_in as u64), move || {
+        refresh_tray(&ui);
+    });
+}
+
 /// Run a sync pass, then schedule the next one.
 ///
 /// Re-armed after each pass rather than on a fixed timer, so the interval can follow what
@@ -451,6 +544,7 @@ fn start_syncing(ui: &Rc<Ui>, interval: std::time::Duration) {
             if pass.changed() || now != previously {
                 refresh_sidebar(&ui);
                 refresh_week(&ui);
+                refresh_tray(&ui);
             }
 
             let next = scheduler::next_interval(interval, pass.changed());
