@@ -11,9 +11,11 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use adw::prelude::*;
+use gtk::glib;
 use gtk::{Align, Orientation};
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{Duration, TimeZone};
 
@@ -23,6 +25,7 @@ use crate::config::{Credentials, Paths};
 use crate::recur::occurrences_in_window;
 use crate::runtime;
 use crate::store::Store;
+use crate::sync::scheduler;
 
 /// Built once and shared with every callback that needs to redraw.
 ///
@@ -36,6 +39,9 @@ struct Ui {
     toasts: adw::ToastOverlay,
     connect_button: gtk::Button,
     week: Rc<week::Week>,
+    /// Accounts Google has permanently rejected. Held in memory, not the store: it is a fact
+    /// about right now, and a restart should find out for itself rather than trust a flag.
+    needs_reconnect: RefCell<HashSet<String>>,
 }
 
 pub fn build(app: &adw::Application) {
@@ -97,11 +103,13 @@ fn startup() -> anyhow::Result<gtk::Widget> {
         toasts: adw::ToastOverlay::new(),
         connect_button: gtk::Button::with_label("Connect account"),
         week: week::Week::new(),
+        needs_reconnect: RefCell::new(HashSet::new()),
     });
 
     let content = build_content(&ui);
     refresh_sidebar(&ui);
     refresh_week(&ui);
+    start_syncing(&ui, scheduler::MIN_INTERVAL);
     Ok(content)
 }
 
@@ -181,6 +189,8 @@ fn start_connect(ui: &Rc<Ui>) {
                     ui.toasts.add_toast(adw::Toast::new(&format!(
                         "Connected {email} — {calendars} calendars"
                     )));
+                    // Whatever was wrong with it, it has just consented afresh.
+                    ui.needs_reconnect.borrow_mut().remove(&email);
                     refresh_sidebar(&ui);
                     refresh_week(&ui);
                 }
@@ -259,6 +269,21 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         name.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
         name.set_tooltip_text(Some(&account.email));
         heading.append(&name);
+
+        if ui.needs_reconnect.borrow().contains(&account.email) {
+            // The account's events stay on the grid: they were real when they were synced,
+            // and blanking them would lose more than it explains.
+            let reconnect = gtk::Button::with_label("Reconnect");
+            reconnect.add_css_class("suggested-action");
+            reconnect.set_valign(Align::Center);
+            reconnect.set_tooltip_text(Some(&format!(
+                "Google no longer accepts the stored credentials for {}",
+                account.email
+            )));
+            let ui = ui.clone();
+            reconnect.connect_clicked(move |_| start_connect(&ui));
+            heading.append(&reconnect);
+        }
 
         let menu = gtk::MenuButton::builder()
             .icon_name("view-more-symbolic")
@@ -398,6 +423,48 @@ fn read_groups(ui: &Rc<Ui>) -> anyhow::Result<Vec<Group>> {
             Ok((account, calendars))
         })
         .collect()
+}
+
+/// Run a sync pass, then schedule the next one.
+///
+/// Re-armed after each pass rather than on a fixed timer, so the interval can follow what
+/// the last pass found: a minute while things are moving, five when they are not.
+fn start_syncing(ui: &Rc<Ui>, interval: std::time::Duration) {
+    let store = ui.store.clone();
+    let credentials = ui.credentials.clone();
+    let ui = ui.clone();
+
+    runtime::spawn(
+        async move { scheduler::sync_all(store, credentials).await },
+        move |pass| {
+            let previously = ui.needs_reconnect.borrow().clone();
+            let now: HashSet<String> = pass.needs_reconnect.iter().cloned().collect();
+            *ui.needs_reconnect.borrow_mut() = now.clone();
+
+            for account in now.difference(&previously) {
+                // Said once, when it becomes true. A toast on every pass would be a toast
+                // every minute for as long as the account stays disconnected.
+                ui.toasts
+                    .add_toast(adw::Toast::new(&format!("{account} needs reconnecting")));
+            }
+
+            if pass.changed() || now != previously {
+                refresh_sidebar(&ui);
+                refresh_week(&ui);
+            }
+
+            let next = scheduler::next_interval(interval, pass.changed());
+            tracing::debug!(
+                stored = pass.stored,
+                deleted = pass.deleted,
+                reconnect = now.len(),
+                next_in = next.as_secs(),
+                "sync pass complete"
+            );
+            let again = ui.clone();
+            glib::timeout_add_local_once(next, move || start_syncing(&again, next));
+        },
+    );
 }
 
 /// Redraw the grid from the store for the week now on screen.

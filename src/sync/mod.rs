@@ -4,6 +4,8 @@
 //! `calendars.visible` or `calendars.user_color` — the store makes that structural, and this
 //! module has no way to reach them.
 
+pub mod scheduler;
+
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
