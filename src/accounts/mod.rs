@@ -3,6 +3,8 @@
 //! SPEC §1: there is no "current account". Connecting is additive — a second account joins
 //! the first on the same grid, and nothing is ever hidden to make room for it.
 
+pub mod style;
+
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,7 +19,7 @@ use crate::store::{CalendarMetadata, Store};
 /// account is never unmarked (SPEC §4). Drawn from the Adwaita palette and ordered for
 /// distinguishability rather than by hue, because the criterion that matters is telling two
 /// accounts apart at a glance.
-const PALETTE: [&str; 8] = [
+pub(crate) const PALETTE: [&str; 8] = [
     "#3584e4", // blue
     "#e66100", // orange
     "#2ec27e", // green

@@ -290,7 +290,7 @@ mod tests {
         assert_eq!(week(&store).len(), 2);
 
         store
-            .set_user_style_for_tests("work@example.com", "team", false, None)
+            .set_calendar_visible("work@example.com", "team", false)
             .unwrap();
         assert_eq!(ids(&week(&store)), vec!["standup"]);
     }

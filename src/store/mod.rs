@@ -315,20 +315,91 @@ impl Store {
         Ok(())
     }
 
-    /// Set the user-owned columns directly, for tests that need a preference in place
-    /// before exercising a sync. The real setters arrive with the styling task.
-    #[cfg(test)]
-    pub fn set_user_style_for_tests(
+    /// The user's colour for an account: its marker, and the default fill for its
+    /// calendars. Sync has no statement that touches this column.
+    pub fn set_account_color(&self, email: &str, color: &str) -> Result<()> {
+        self.update_account(email, "color", params![email, color])
+    }
+
+    /// A short human label. "work" reads better in a sidebar than a 30-character address.
+    pub fn set_account_label(&self, email: &str, label: Option<&str>) -> Result<()> {
+        self.update_account(email, "label", params![email, label])
+    }
+
+    /// The user's grouping, not Google's.
+    pub fn set_account_sort_order(&self, email: &str, sort_order: i64) -> Result<()> {
+        self.update_account(email, "sort_order", params![email, sort_order])
+    }
+
+    fn update_account(
+        &self,
+        email: &str,
+        column: &str,
+        values: &[&dyn rusqlite::ToSql],
+    ) -> Result<()> {
+        // The column name is chosen here, never by a caller, so it cannot carry anything but
+        // one of the three literals above.
+        let changed = self
+            .conn
+            .execute(
+                &format!("UPDATE accounts SET {column} = ?2 WHERE email = ?1"),
+                values,
+            )
+            .with_context(|| format!("could not set {column} for {email}"))?;
+        if changed == 0 {
+            anyhow::bail!("there is no connected account {email}");
+        }
+        Ok(())
+    }
+
+    /// The user's colour for one calendar, overriding the account default. `None` clears the
+    /// override and hands the calendar back to the account's colour.
+    pub fn set_calendar_user_color(
+        &self,
+        account: &str,
+        calendar_id: &str,
+        user_color: Option<&str>,
+    ) -> Result<()> {
+        self.update_calendar(
+            account,
+            calendar_id,
+            "user_color",
+            params![account, calendar_id, user_color],
+        )
+    }
+
+    /// Whether a calendar's events appear at all. Never written by sync.
+    pub fn set_calendar_visible(
         &self,
         account: &str,
         calendar_id: &str,
         visible: bool,
-        user_color: Option<&str>,
     ) -> Result<()> {
-        self.conn.execute(
-            "UPDATE calendars SET visible = ?3, user_color = ?4 WHERE account = ?1 AND id = ?2",
-            params![account, calendar_id, visible, user_color],
-        )?;
+        self.update_calendar(
+            account,
+            calendar_id,
+            "visible",
+            params![account, calendar_id, visible],
+        )
+    }
+
+    fn update_calendar(
+        &self,
+        account: &str,
+        calendar_id: &str,
+        column: &str,
+        values: &[&dyn rusqlite::ToSql],
+    ) -> Result<()> {
+        let changed = self
+            .conn
+            .execute(
+                &format!("UPDATE calendars SET {column} = ?3 WHERE account = ?1 AND id = ?2"),
+                values,
+            )
+            .with_context(|| format!("could not set {column} for {calendar_id}"))?;
+        if changed == 0 {
+            anyhow::bail!("there is no calendar {calendar_id} on {account}");
+        }
         Ok(())
     }
 
@@ -695,6 +766,114 @@ mod tests {
             .unwrap();
         assert_eq!(personal.summary, "Personal");
         assert_eq!(work.summary, "Work");
+    }
+
+    #[test]
+    fn a_setter_writes_its_own_column_and_leaves_the_servers_alone() {
+        let store = two_accounts();
+        store
+            .set_calendar_user_color("work@example.com", "team", Some("#ff0000"))
+            .unwrap();
+        store
+            .set_calendar_visible("work@example.com", "team", false)
+            .unwrap();
+
+        let stored = store.calendar("work@example.com", "team").unwrap().unwrap();
+        assert_eq!(stored.user_color.as_deref(), Some("#ff0000"));
+        assert!(!stored.visible);
+        assert_eq!(
+            stored.summary, "Team",
+            "the server's name must be untouched"
+        );
+        assert_eq!(stored.color.as_deref(), Some("#000000"));
+    }
+
+    #[test]
+    fn clearing_a_calendar_override_hands_it_back_to_the_account_colour() {
+        let store = two_accounts();
+        store
+            .set_calendar_user_color("work@example.com", "team", Some("#ff0000"))
+            .unwrap();
+        store
+            .set_calendar_user_color("work@example.com", "team", None)
+            .unwrap();
+        assert_eq!(
+            store
+                .calendar("work@example.com", "team")
+                .unwrap()
+                .unwrap()
+                .user_color,
+            None
+        );
+    }
+
+    #[test]
+    fn the_account_setters_write_only_what_they_name() {
+        let store = two_accounts();
+        store
+            .set_account_color("work@example.com", "#9141ac")
+            .unwrap();
+        store
+            .set_account_label("work@example.com", Some("work"))
+            .unwrap();
+        store.set_account_sort_order("work@example.com", 5).unwrap();
+
+        let accounts = store.accounts().unwrap();
+        let work = accounts
+            .iter()
+            .find(|a| a.email == "work@example.com")
+            .unwrap();
+        assert_eq!(work.color.as_deref(), Some("#9141ac"));
+        assert_eq!(work.label.as_deref(), Some("work"));
+        assert_eq!(work.sort_order, 5);
+
+        let personal = accounts
+            .iter()
+            .find(|a| a.email == "personal@example.com")
+            .unwrap();
+        assert_eq!(
+            personal.color.as_deref(),
+            Some("#3584e4"),
+            "the other account is untouched"
+        );
+        assert_eq!(personal.label, None);
+    }
+
+    #[test]
+    fn styling_an_account_that_is_not_connected_is_an_error_not_a_silent_no_op() {
+        let store = two_accounts();
+        store
+            .set_account_color("nobody@example.com", "#000000")
+            .expect_err("a typo must not look like success");
+    }
+
+    #[test]
+    fn the_users_ordering_decides_the_sidebar_not_the_address() {
+        let store = two_accounts();
+        assert_eq!(store.accounts().unwrap()[0].email, "personal@example.com");
+        store
+            .set_account_sort_order("work@example.com", -1)
+            .unwrap();
+        assert_eq!(store.accounts().unwrap()[0].email, "work@example.com");
+    }
+
+    #[test]
+    fn removing_an_account_takes_its_calendars_and_events_with_it() {
+        let mut store = two_accounts();
+        store
+            .upsert_event(&event("work@example.com", "team", "standup", 1_300, 1_400))
+            .unwrap();
+        store.remove_account("work@example.com").unwrap();
+
+        assert_eq!(store.account_count().unwrap(), 1);
+        assert!(
+            store
+                .calendar("work@example.com", "team")
+                .unwrap()
+                .is_none()
+        );
+        assert!(store.events_in_range(0, i64::MAX).unwrap().is_empty());
+        let _ = &mut store;
     }
 
     #[test]

@@ -478,7 +478,12 @@ mod tests {
         store
             .lock()
             .unwrap()
-            .set_user_style_for_tests("work@example.com", "primary", false, Some("#ff0000"))
+            .set_calendar_visible("work@example.com", "primary", false)
+            .unwrap();
+        store
+            .lock()
+            .unwrap()
+            .set_calendar_user_color("work@example.com", "primary", Some("#ff0000"))
             .unwrap();
 
         let fake = serve(vec![(200, PAGE1.to_string()), (200, PAGE2.to_string())]);
