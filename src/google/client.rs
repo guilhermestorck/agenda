@@ -177,6 +177,7 @@ impl Session {
         &mut self,
         calendar_id: &str,
         page_token: Option<&str>,
+        sync_token: Option<&str>,
     ) -> Result<EventsPage> {
         let mut query = vec![
             ("maxResults", "2500".to_string()),
@@ -184,6 +185,11 @@ impl Session {
         ];
         if let Some(token) = page_token {
             query.push(("pageToken", token.to_string()));
+        }
+        // Sent only on a delta run. With it, Google returns just what changed — and refuses
+        // with 410 if the cursor is too old to extend.
+        if let Some(token) = sync_token {
+            query.push(("syncToken", token.to_string()));
         }
 
         let path = format!("/calendars/{}/events", urlencode(calendar_id));

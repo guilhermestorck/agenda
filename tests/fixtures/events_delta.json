@@ -1,0 +1,40 @@
+{
+  "kind": "calendar#events",
+  "etag": "\"p33o8k4tqfno30j\"",
+  "summary": "work@example.com",
+  "timeZone": "Europe/Madrid",
+  "accessRole": "owner",
+  "nextSyncToken": "CJDFnbHF7YkDEJDFnbHF7YkDGAUgAFTER",
+  "items": [
+    {
+      "kind": "calendar#event",
+      "etag": "\"3400000000000099\"",
+      "id": "timed001",
+      "status": "confirmed",
+      "summary": "Standup (renamed)",
+      "updated": "2026-09-03T09:00:00.000Z",
+      "start": { "dateTime": "2026-09-14T09:30:00+02:00", "timeZone": "Europe/Madrid" },
+      "end": { "dateTime": "2026-09-14T09:45:00+02:00", "timeZone": "Europe/Madrid" },
+      "iCalUID": "timed001@google.com",
+      "sequence": 1
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3400000000000100\"",
+      "id": "brandnew001",
+      "status": "confirmed",
+      "summary": "Added since the last sync",
+      "updated": "2026-09-03T09:05:00.000Z",
+      "start": { "dateTime": "2026-09-19T10:00:00+02:00", "timeZone": "Europe/Madrid" },
+      "end": { "dateTime": "2026-09-19T11:00:00+02:00", "timeZone": "Europe/Madrid" },
+      "iCalUID": "brandnew001@google.com",
+      "sequence": 0
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3400000000000101\"",
+      "id": "overnight001",
+      "status": "cancelled"
+    }
+  ]
+}

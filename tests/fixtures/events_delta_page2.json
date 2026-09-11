@@ -1,0 +1,21 @@
+{
+  "kind": "calendar#events",
+  "etag": "\"p33o8k4tqfno30l\"",
+  "timeZone": "Europe/Madrid",
+  "accessRole": "owner",
+  "nextSyncToken": "CURSOR_AFTER_PAGINATED_DELTA",
+  "items": [
+    {
+      "kind": "calendar#event",
+      "etag": "\"3400000000000201\"",
+      "id": "delta_second_page",
+      "status": "confirmed",
+      "summary": "Changed, second page of the delta",
+      "updated": "2026-09-04T09:01:00.000Z",
+      "start": { "dateTime": "2026-09-15T12:00:00+02:00", "timeZone": "Europe/Madrid" },
+      "end": { "dateTime": "2026-09-15T13:00:00+02:00", "timeZone": "Europe/Madrid" },
+      "iCalUID": "delta_second_page@google.com",
+      "sequence": 1
+    }
+  ]
+}
