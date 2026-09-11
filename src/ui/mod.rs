@@ -4,6 +4,7 @@
 //! the one action that reaches out, and it does so through `runtime::spawn` so the window
 //! stays responsive for however long the user spends at Google's consent screen.
 
+pub mod layout;
 pub mod week;
 
 use std::rc::Rc;
@@ -12,8 +13,14 @@ use std::sync::{Arc, Mutex};
 use adw::prelude::*;
 use gtk::{Align, Orientation};
 
+use std::collections::HashMap;
+
+use chrono::{Duration, TimeZone};
+
+use crate::accounts::style::resolve;
 use crate::accounts::{self, Connected};
 use crate::config::{Credentials, Paths};
+use crate::recur::occurrences_in_window;
 use crate::runtime;
 use crate::store::Store;
 
@@ -94,6 +101,7 @@ fn startup() -> anyhow::Result<gtk::Widget> {
 
     let content = build_content(&ui);
     refresh_sidebar(&ui);
+    refresh_week(&ui);
     Ok(content)
 }
 
@@ -117,11 +125,17 @@ fn build_content(ui: &Rc<Ui>) -> gtk::Widget {
     let today = gtk::Button::with_label("Today");
 
     for (button, weeks) in [(&previous, -1_i64), (&next, 1)] {
-        let week = ui.week.clone();
-        button.connect_clicked(move |_| week.shift(weeks));
+        let ui = ui.clone();
+        button.connect_clicked(move |_| {
+            ui.week.shift(weeks);
+            refresh_week(&ui);
+        });
     }
-    let week = ui.week.clone();
-    today.connect_clicked(move |_| week.go_to_today());
+    let clone = ui.clone();
+    today.connect_clicked(move |_| {
+        clone.week.go_to_today();
+        refresh_week(&clone);
+    });
 
     header.pack_end(&navigation);
     header.pack_end(&today);
@@ -168,6 +182,7 @@ fn start_connect(ui: &Rc<Ui>) {
                         "Connected {email} — {calendars} calendars"
                     )));
                     refresh_sidebar(&ui);
+                    refresh_week(&ui);
                 }
                 Ok(Connected::Declined) => {
                     ui.toasts
@@ -263,6 +278,79 @@ fn read_groups(ui: &Rc<Ui>) -> anyhow::Result<Vec<Group>> {
             Ok((account, calendars))
         })
         .collect()
+}
+
+/// Redraw the grid from the store for the week now on screen.
+///
+/// The colour of every event is resolved here, against the account and calendar it came
+/// from — SPEC §4's rule, applied once per redraw rather than baked into the store.
+fn refresh_week(ui: &Rc<Ui>) {
+    let start = ui.week.start();
+    let zone = ui.week.zone();
+    let Some(from) = zone
+        .from_local_datetime(&start.and_hms_opt(0, 0, 0).expect("midnight exists"))
+        .earliest()
+    else {
+        tracing::warn!(%start, "the displayed week has no valid start");
+        return;
+    };
+    let to = from + Duration::days(super::ui::week::DAYS as i64);
+
+    let items = match collect_items(ui, from.timestamp(), to.timestamp()) {
+        Ok(items) => items,
+        Err(error) => {
+            tracing::error!(error = %format!("{error:#}"), "could not read the week");
+            Vec::new()
+        }
+    };
+    tracing::debug!(week = %start, events = items.len(), "redrew the week");
+    ui.week.set_items(items);
+}
+
+fn collect_items(ui: &Rc<Ui>, from: i64, to: i64) -> anyhow::Result<Vec<week::Item>> {
+    let store = ui
+        .store
+        .lock()
+        .map_err(|_| anyhow::anyhow!("the store lock was poisoned"))?;
+
+    let accounts: HashMap<String, crate::store::Account> = store
+        .accounts()?
+        .into_iter()
+        .map(|account| (account.email.clone(), account))
+        .collect();
+    let mut calendars: HashMap<(String, String), crate::store::Calendar> = HashMap::new();
+    for email in accounts.keys() {
+        for calendar in store.calendars(email)? {
+            calendars.insert((calendar.account.clone(), calendar.id.clone()), calendar);
+        }
+    }
+
+    let occurrences = occurrences_in_window(&store, from, to)?;
+    Ok(occurrences
+        .into_iter()
+        .filter_map(|occurrence| {
+            let account = accounts.get(&occurrence.event.account)?;
+            let calendar = calendars.get(&(
+                occurrence.event.account.clone(),
+                occurrence.event.calendar_id.clone(),
+            ))?;
+            Some(week::Item {
+                summary: if occurrence.event.summary.is_empty() {
+                    "(no title)".to_string()
+                } else {
+                    occurrence.event.summary.clone()
+                },
+                start_utc: occurrence.start_utc,
+                end_utc: occurrence.end_utc,
+                all_day: occurrence.event.all_day,
+                colors: resolve(account, calendar),
+                account: account
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| account.email.clone()),
+            })
+        })
+        .collect())
 }
 
 fn swatch(color: Option<&str>) -> gtk::DrawingArea {

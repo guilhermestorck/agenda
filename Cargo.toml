@@ -10,7 +10,7 @@ base64 = "0.23.1"
 chrono = "0.4.45"
 chrono-tz = "0.10.4"
 getrandom = "0.4.3"
-gtk = { version = "0.11.4", package = "gtk4", features = ["v4_10"] }
+gtk = { version = "0.11.4", package = "gtk4", features = ["v4_10", "v4_12"] }
 oo7 = { version = "0.6.0", features = ["tokio", "native_crypto"] }
 reqwest = { version = "0.13.5", features = ["form", "json", "query"] }
 rrule = "0.14.0"

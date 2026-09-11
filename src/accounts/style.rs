@@ -58,6 +58,44 @@ fn generated(key: &str) -> String {
     PALETTE[(hash % PALETTE.len() as u64) as usize].to_string()
 }
 
+/// Black or white, whichever actually contrasts better against `fill`.
+///
+/// Computed rather than thresholded. A guessed cutoff put white on the palette's blue at
+/// 3.77:1 — under the WCAG AA floor — when black would have given 5.57:1. Uses relative
+/// luminance rather than a naive average, because a saturated green and a saturated blue of
+/// the same average brightness are nothing alike to read against, and the palette has both.
+pub fn text_on(fill: &str) -> &'static str {
+    // An unreadable colour string must not make an event invisible; white on the Adwaita
+    // accent is the safe default.
+    let Some(fill) = luminance(fill) else {
+        return "#ffffff";
+    };
+    let against_white = (1.0 + 0.05) / (fill + 0.05);
+    let against_black = (fill + 0.05) / 0.05;
+    if against_black >= against_white {
+        "#000000"
+    } else {
+        "#ffffff"
+    }
+}
+
+fn luminance(color: &str) -> Option<f64> {
+    let hex = color.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let channel = |offset: usize| -> Option<f64> {
+        let value = u8::from_str_radix(&hex[offset..offset + 2], 16).ok()?;
+        let value = f64::from(value) / 255.0;
+        Some(if value <= 0.040_45 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        })
+    };
+    Some(0.2126 * channel(0)? + 0.7152 * channel(2)? + 0.0722 * channel(4)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,6 +123,44 @@ mod tests {
             sync_token: None,
             synced_at: None,
         }
+    }
+
+    #[test]
+    fn text_stays_legible_against_every_palette_colour() {
+        // Criterion: an event whose title cannot be read is an event that is not on screen.
+        for fill in PALETTE {
+            let text = text_on(fill);
+            let contrast = contrast_ratio(fill, text);
+            assert!(
+                contrast >= 4.5,
+                "{fill} on {text} is {contrast:.2}:1, below the 4.5:1 readability floor"
+            );
+        }
+    }
+
+    #[test]
+    fn a_light_fill_takes_dark_text_and_a_dark_fill_takes_light() {
+        assert_eq!(text_on("#ffffff"), "#000000");
+        assert_eq!(text_on("#000000"), "#ffffff");
+        assert_eq!(text_on("#f6f5f4"), "#000000");
+    }
+
+    #[test]
+    fn an_unreadable_colour_string_still_yields_usable_text() {
+        // A malformed user colour must not make an event invisible.
+        assert_eq!(text_on("not a colour"), "#ffffff");
+        assert_eq!(text_on("#fff"), "#ffffff");
+    }
+
+    fn contrast_ratio(a: &str, b: &str) -> f64 {
+        let first = luminance(a).unwrap();
+        let second = luminance(b).unwrap();
+        let (lighter, darker) = if first > second {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        (lighter + 0.05) / (darker + 0.05)
     }
 
     #[test]

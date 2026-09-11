@@ -3,12 +3,19 @@
 //! Chrome only. Events are placed on the `gtk::Fixed` that sits over the grid, which is why
 //! the geometry below is public to the module: the same numbers decide where an event goes.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use adw::prelude::*;
 use chrono::{Datelike, Duration, Local, NaiveDate, Timelike, Weekday};
+use chrono_tz::Tz;
+use gtk::glib;
 use gtk::{Align, Orientation};
+
+use crate::accounts::style::{Colors, text_on};
+
+use super::layout::{columns, segments};
 
 /// Pixels per hour. The whole day is drawn and scrolled rather than collapsed to working
 /// hours, because "working hours" is a preference nobody has expressed yet.
@@ -16,6 +23,22 @@ pub const HOUR_HEIGHT: f64 = 48.0;
 /// Width of the hour axis down the left.
 pub const AXIS_WIDTH: i32 = 56;
 pub const DAYS: usize = 7;
+/// The hour the grid is scrolled to on open.
+const FIRST_VISIBLE_HOUR: f64 = 7.0;
+
+/// One drawable event: everything the grid needs, with the store and Google already out of
+/// the picture.
+#[derive(Debug, Clone)]
+pub struct Item {
+    pub summary: String,
+    pub start_utc: i64,
+    pub end_utc: i64,
+    pub all_day: bool,
+    pub colors: Colors,
+    /// Shown as the avatar's initials and in the tooltip, so an event's account is legible
+    /// even when two accounts' colours are hard to tell apart in isolation.
+    pub account: String,
+}
 
 pub struct Week {
     root: gtk::Box,
@@ -27,6 +50,10 @@ pub struct Week {
     grid: gtk::DrawingArea,
     /// The Monday the displayed week starts on.
     start: Rc<Cell<NaiveDate>>,
+    items: RefCell<Vec<Item>>,
+    /// The zone the grid is drawn in: the user's own, not any calendar's.
+    zone: Tz,
+    palette: gtk::CssProvider,
 }
 
 /// The Monday on or before `date`. Weeks start on Monday here; Sunday-first is a preference
@@ -106,12 +133,28 @@ impl Week {
             .child(&scrollable)
             .build();
 
+        // Open on the working day rather than at midnight. The hours before dawn are the
+        // least likely to hold anything, and scrolling past them on every launch is a chore.
+        let adjustment = scroller.vadjustment();
+        glib::idle_add_local_once(move || {
+            adjustment.set_value(FIRST_VISIBLE_HOUR * HOUR_HEIGHT);
+        });
+
         let root = gtk::Box::new(Orientation::Vertical, 0);
         root.append(&header_row);
         root.append(&gtk::Separator::new(Orientation::Horizontal));
         root.append(&all_day_row);
         root.append(&gtk::Separator::new(Orientation::Horizontal));
         root.append(&scroller);
+
+        let palette = gtk::CssProvider::new();
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &palette,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
 
         let week = Rc::new(Self {
             root,
@@ -121,10 +164,112 @@ impl Week {
             all_day_row,
             grid,
             start,
+            items: RefCell::new(Vec::new()),
+            zone: local_zone(),
+            palette,
         });
         week.install_grid_drawing();
+        week.install_relayout_on_resize();
         week.refresh();
         week
+    }
+
+    /// Replace everything on the grid. Called after a sync or a styling change; the week
+    /// view never reads the store itself.
+    pub fn set_items(self: &Rc<Self>, items: Vec<Item>) {
+        *self.items.borrow_mut() = items;
+        self.rebuild_palette();
+        self.place_items();
+    }
+
+    fn install_relayout_on_resize(self: &Rc<Self>) {
+        let week = self.clone();
+        self.grid.connect_resize(move |_, _, _| week.place_items());
+    }
+
+    /// One stylesheet per redraw, with a class per distinct colour.
+    ///
+    /// Generated rather than set per widget: GTK4 deprecated per-widget style contexts, and
+    /// a handful of classes is cheaper than a provider for every event on screen.
+    fn rebuild_palette(&self) {
+        let mut colors: BTreeSet<String> = BTreeSet::new();
+        for item in self.items.borrow().iter() {
+            colors.insert(item.colors.fill.clone());
+            colors.insert(item.colors.marker.clone());
+        }
+
+        let mut css = String::new();
+        for color in colors {
+            let class = class_for(&color);
+            css.push_str(&format!(
+                ".{class} {{ background-color: {color}; color: {}; }}\n",
+                text_on(&color)
+            ));
+        }
+        css.push_str(
+            ".agenda-event { border-radius: 5px; }\n             .agenda-event label { padding: 0 4px; }\n",
+        );
+        self.palette.load_from_string(&css);
+    }
+
+    /// Position every item on the grid for the current week and width.
+    fn place_items(self: &Rc<Self>) {
+        while let Some(child) = self.canvas.first_child() {
+            self.canvas.remove(&child);
+        }
+        while let Some(child) = self.all_day_row.first_child() {
+            self.all_day_row.remove(&child);
+        }
+
+        let start = self.start.get();
+        let width = f64::from(self.grid.width());
+        if width <= 0.0 {
+            return;
+        }
+        let column_width = width / DAYS as f64;
+
+        let items = self.items.borrow();
+
+        // All-day events go in their own band; they have no position on an hour axis.
+        for day in 0..DAYS {
+            let lane = gtk::Box::new(Orientation::Vertical, 2);
+            lane.set_hexpand(true);
+            lane.set_size_request((column_width as i32).max(1), -1);
+            for item in items.iter().filter(|item| item.all_day) {
+                for segment in segments(item.start_utc, item.end_utc, start, self.zone, DAYS) {
+                    if segment.day == day {
+                        lane.append(&event_widget(item, 18, column_width as i32));
+                    }
+                }
+            }
+            self.all_day_row.append(&lane);
+        }
+
+        // Timed events, one day at a time so overlap is resolved within a column.
+        for day in 0..DAYS {
+            let mut placed: Vec<(&Item, super::layout::Segment)> = Vec::new();
+            for item in items.iter().filter(|item| !item.all_day) {
+                for segment in segments(item.start_utc, item.end_utc, start, self.zone, DAYS) {
+                    if segment.day == day {
+                        placed.push((item, segment));
+                    }
+                }
+            }
+
+            let geometry: Vec<super::layout::Segment> =
+                placed.iter().map(|(_, segment)| *segment).collect();
+            for ((item, segment), (column, of)) in placed.iter().zip(columns(&geometry)) {
+                let height = segment.height_minutes / 60.0 * HOUR_HEIGHT;
+                let slot = column_width / of as f64;
+                let widget = event_widget(item, height as i32, slot as i32);
+                widget.set_size_request((slot as i32 - 2).max(1), (height as i32 - 1).max(1));
+                self.canvas.put(
+                    &widget,
+                    day as f64 * column_width + column as f64 * slot + 1.0,
+                    segment.top_minutes / 60.0 * HOUR_HEIGHT,
+                );
+            }
+        }
     }
 
     pub fn widget(&self) -> &gtk::Box {
@@ -138,6 +283,10 @@ impl Week {
     /// The Monday of the displayed week.
     pub fn start(&self) -> NaiveDate {
         self.start.get()
+    }
+
+    pub fn zone(&self) -> Tz {
+        self.zone
     }
 
     pub fn shift(&self, weeks: i64) {
@@ -228,6 +377,77 @@ impl Week {
     }
 }
 
+/// A CSS class name for a colour. Hex digits only, because a class cannot contain a '#'.
+fn class_for(color: &str) -> String {
+    let sanitised: String = color
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    format!("agenda-c{sanitised}")
+}
+
+/// The user's own zone. The grid is drawn in one zone — theirs — however many zones the
+/// events themselves carry.
+///
+/// Read from the system rather than through a crate: `/etc/localtime` is a symlink into the
+/// zoneinfo tree on every Linux this targets, and `chrono::Local` exposes an offset but not
+/// the zone name that DST arithmetic needs.
+fn local_zone() -> Tz {
+    std::env::var("TZ")
+        .ok()
+        .or_else(|| {
+            std::fs::read_link("/etc/localtime")
+                .ok()
+                .and_then(|path| zone_name_of(&path.to_string_lossy()))
+        })
+        .and_then(|name| name.parse::<Tz>().ok())
+        .unwrap_or(chrono_tz::UTC)
+}
+
+fn zone_name_of(link: &str) -> Option<String> {
+    link.split_once("/zoneinfo/")
+        .map(|(_, zone)| zone.to_string())
+}
+
+/// One event on the grid: a leading stripe in the account's colour, an avatar for the
+/// account, and the title.
+///
+/// The stripe carries the account on every event, however small. The avatar appears only
+/// when there is room for it, because a circle squeezed into a 20-minute slot pushes the
+/// title out and tells the user less than the stripe already did.
+fn event_widget(item: &Item, height: i32, width: i32) -> gtk::Widget {
+    let row = gtk::Box::new(Orientation::Horizontal, 0);
+    row.add_css_class("agenda-event");
+    row.add_css_class(&class_for(&item.colors.fill));
+    row.set_overflow(gtk::Overflow::Hidden);
+    row.set_tooltip_text(Some(&format!("{}\n{}", item.summary, item.account)));
+
+    let stripe = gtk::Box::new(Orientation::Vertical, 0);
+    stripe.set_size_request(4, -1);
+    stripe.add_css_class(&class_for(&item.colors.marker));
+    row.append(&stripe);
+
+    // Width matters as much as height: on a day split three ways the avatar would leave no
+    // room for the title, and a title reduced to an ellipsis tells the user nothing.
+    if height >= 36 && width >= 110 {
+        let avatar = adw::Avatar::new(20, Some(&item.account), true);
+        avatar.set_margin_start(4);
+        avatar.set_valign(Align::Start);
+        avatar.set_margin_top(2);
+        row.append(&avatar);
+    }
+
+    let label = gtk::Label::new(Some(&item.summary));
+    label.set_halign(Align::Start);
+    label.set_valign(Align::Start);
+    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    label.add_css_class("caption");
+    label.set_margin_top(1);
+    row.append(&label);
+
+    row.upcast()
+}
+
 fn weekday_name(weekday: Weekday) -> &'static str {
     match weekday {
         Weekday::Mon => "Mon",
@@ -243,6 +463,27 @@ fn weekday_name(weekday: Weekday) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_zone_name_is_read_out_of_the_localtime_symlink() {
+        assert_eq!(
+            zone_name_of("/usr/share/zoneinfo/Europe/Madrid").as_deref(),
+            Some("Europe/Madrid")
+        );
+        assert_eq!(
+            zone_name_of("../usr/share/zoneinfo/America/Sao_Paulo").as_deref(),
+            Some("America/Sao_Paulo")
+        );
+        assert_eq!(zone_name_of("/etc/something-else"), None);
+    }
+
+    #[test]
+    fn this_machines_zone_resolves_to_a_real_one() {
+        // A grid drawn in the wrong zone puts every event at the wrong hour, so this is
+        // worth knowing at test time rather than by looking at a screenshot.
+        let zone = local_zone();
+        assert!(!zone.name().is_empty());
+    }
 
     #[test]
     fn a_week_starts_on_the_monday_on_or_before_the_date() {
