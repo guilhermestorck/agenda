@@ -230,37 +230,149 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         heading.set_margin_start(12);
         heading.set_margin_end(12);
         heading.set_margin_top(6);
-        // The account marker. §10 leaves its final form to `views`; a swatch is enough to
-        // tell accounts apart in a list, and the week grid will decide its own.
-        heading.append(&swatch(account.color.as_deref()));
+
+        // The account's own colour: its marker on every event, and the fill for calendars
+        // Google gave none.
+        let account_color = color_button(account.color.as_deref());
+        {
+            let ui = ui.clone();
+            let email = account.email.clone();
+            account_color.connect_rgba_notify(move |button| {
+                let (email, color) = (email.clone(), hex_of(button.rgba()));
+                apply(&ui, move |store| store.set_account_color(&email, &color));
+            });
+        }
+        heading.append(&account_color);
+
         let name = gtk::Label::new(Some(account.label.as_deref().unwrap_or(&account.email)));
         name.add_css_class("heading");
         name.set_halign(Align::Start);
+        name.set_hexpand(true);
         name.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        name.set_tooltip_text(Some(&account.email));
         heading.append(&name);
+
+        let menu = gtk::MenuButton::builder()
+            .icon_name("view-more-symbolic")
+            .valign(Align::Center)
+            .build();
+        menu.add_css_class("flat");
+        menu.set_popover(Some(&account_menu(ui, &account)));
+        heading.append(&menu);
         group.append(&heading);
 
         for calendar in calendars {
             let row = gtk::Box::new(Orientation::Horizontal, 8);
-            row.set_margin_start(28);
+            row.set_margin_start(20);
             row.set_margin_end(12);
             row.set_margin_top(4);
-            // Full fill resolution lands with the styling task; the rule that already holds
-            // here is that the user's override wins over Google's colour.
-            row.append(&swatch(
-                calendar.user_color.as_deref().or(calendar.color.as_deref()),
-            ));
+
+            let shown = gtk::CheckButton::new();
+            shown.set_active(calendar.visible);
+            shown.set_valign(Align::Center);
+            shown.set_tooltip_text(Some("Show this calendar"));
+            {
+                let ui = ui.clone();
+                let (account, id) = (calendar.account.clone(), calendar.id.clone());
+                shown.connect_toggled(move |button| {
+                    let (account, id, visible) = (account.clone(), id.clone(), button.is_active());
+                    apply(&ui, move |store| {
+                        store.set_calendar_visible(&account, &id, visible)
+                    });
+                });
+            }
+            row.append(&shown);
+
+            let fill = color_button(
+                calendar
+                    .user_color
+                    .as_deref()
+                    .or(calendar.color.as_deref())
+                    .or(account.color.as_deref()),
+            );
+            {
+                let ui = ui.clone();
+                let (acct, id) = (calendar.account.clone(), calendar.id.clone());
+                fill.connect_rgba_notify(move |button| {
+                    let (acct, id, color) = (acct.clone(), id.clone(), hex_of(button.rgba()));
+                    apply(&ui, move |store| {
+                        store.set_calendar_user_color(&acct, &id, Some(&color))
+                    });
+                });
+            }
+            row.append(&fill);
+
             let label = gtk::Label::new(Some(&calendar.summary));
             label.set_halign(Align::Start);
+            label.set_hexpand(true);
             label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            label.set_tooltip_text(Some(&calendar.summary));
             if !calendar.visible {
                 label.add_css_class("dim-label");
             }
             row.append(&label);
+
+            // Only offered when there is something to undo, so the row stays quiet for a
+            // calendar the user has never touched.
+            if calendar.user_color.is_some() {
+                let reset = gtk::Button::from_icon_name("edit-undo-symbolic");
+                reset.add_css_class("flat");
+                reset.set_valign(Align::Center);
+                reset.set_tooltip_text(Some("Use the calendar's own colour again"));
+                let ui = ui.clone();
+                let (acct, id) = (calendar.account.clone(), calendar.id.clone());
+                reset.connect_clicked(move |_| {
+                    let (acct, id) = (acct.clone(), id.clone());
+                    apply(&ui, move |store| {
+                        store.set_calendar_user_color(&acct, &id, None)
+                    });
+                });
+                row.append(&reset);
+            }
+
             group.append(&row);
         }
         ui.sidebar.append(&group);
     }
+}
+
+/// Rename and disconnect, kept out of the row itself so the sidebar stays a list of
+/// calendars rather than a control panel.
+fn account_menu(ui: &Rc<Ui>, account: &crate::store::Account) -> gtk::Popover {
+    let content = gtk::Box::new(Orientation::Vertical, 6);
+    content.set_margin_top(6);
+    content.set_margin_bottom(6);
+    content.set_margin_start(6);
+    content.set_margin_end(6);
+
+    let entry = gtk::Entry::builder()
+        .placeholder_text("Label, e.g. work")
+        .text(account.label.clone().unwrap_or_default())
+        .build();
+    {
+        let ui = ui.clone();
+        let email = account.email.clone();
+        entry.connect_activate(move |entry| {
+            let email = email.clone();
+            let text = entry.text().trim().to_string();
+            let label = (!text.is_empty()).then_some(text);
+            apply(&ui, move |store| {
+                store.set_account_label(&email, label.as_deref())
+            });
+        });
+    }
+    content.append(&entry);
+
+    let remove = gtk::Button::with_label("Disconnect account");
+    remove.add_css_class("destructive-action");
+    {
+        let ui = ui.clone();
+        let email = account.email.clone();
+        remove.connect_clicked(move |_| confirm_remove(&ui, &email));
+    }
+    content.append(&remove);
+
+    gtk::Popover::builder().child(&content).build()
 }
 
 type Group = (crate::store::Account, Vec<crate::store::Calendar>);
@@ -353,32 +465,87 @@ fn collect_items(ui: &Rc<Ui>, from: i64, to: i64) -> anyhow::Result<Vec<week::It
         .collect())
 }
 
-fn swatch(color: Option<&str>) -> gtk::DrawingArea {
-    let area = gtk::DrawingArea::new();
-    area.set_content_width(12);
-    area.set_content_height(12);
-    area.set_valign(Align::Center);
-    let rgba = color
-        .and_then(|color| gtk::gdk::RGBA::parse(color).ok())
-        .unwrap_or_else(|| gtk::gdk::RGBA::parse("#77767b").expect("a literal colour parses"));
-    area.set_draw_func(move |_, context, width, height| {
-        context.set_source_rgba(
-            rgba.red() as f64,
-            rgba.green() as f64,
-            rgba.blue() as f64,
-            rgba.alpha() as f64,
+/// `#RRGGBB` for a colour the user picked. Alpha is dropped: a translucent event on a
+/// translucent event is unreadable, and nothing else in the app has a use for it.
+fn hex_of(rgba: gtk::gdk::RGBA) -> String {
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        (rgba.red() * 255.0).round() as u8,
+        (rgba.green() * 255.0).round() as u8,
+        (rgba.blue() * 255.0).round() as u8,
+    )
+}
+
+fn color_button(current: Option<&str>) -> gtk::ColorDialogButton {
+    let button = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::new()));
+    button.set_valign(Align::Center);
+    if let Some(rgba) = current.and_then(|color| gtk::gdk::RGBA::parse(color).ok()) {
+        button.set_rgba(&rgba);
+    }
+    button
+}
+
+/// Apply a store change, then redraw both surfaces that depend on it.
+fn apply(ui: &Rc<Ui>, change: impl FnOnce(&crate::store::Store) -> anyhow::Result<()>) {
+    let result = ui
+        .store
+        .lock()
+        .map_err(|_| anyhow::anyhow!("the store lock was poisoned"))
+        .and_then(|store| change(&store));
+
+    match result {
+        Ok(()) => {
+            refresh_sidebar(ui);
+            refresh_week(ui);
+        }
+        Err(error) => {
+            tracing::error!(error = %format!("{error:#}"), "could not save the change");
+            ui.toasts
+                .add_toast(adw::Toast::new(&format!("Could not save: {error}")));
+        }
+    }
+}
+
+/// Ask before disconnecting. Removing an account cascades to its calendars and every event
+/// on them, and re-adding it means consenting again.
+fn confirm_remove(ui: &Rc<Ui>, email: &str) {
+    let dialog = adw::AlertDialog::new(
+        Some("Disconnect this account?"),
+        Some(&format!(
+            "{email} and its calendars will be removed from agenda. \
+             Nothing in your Google account changes, and you can reconnect it later."
+        )),
+    );
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("remove", "Disconnect");
+    dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+
+    // The parent is taken before the closure captures anything, because `connect_response`
+    // is FnMut and would otherwise hold the only handle to it.
+    let parent = ui.toasts.root().and_downcast::<gtk::Window>();
+    let handler = ui.clone();
+    let email = email.to_string();
+    dialog.connect_response(None, move |_, response| {
+        if response != "remove" {
+            return;
+        }
+        let ui = handler.clone();
+        let account = email.clone();
+        apply(&ui, move |store| store.remove_account(&account));
+        // The tokens outlive the row otherwise, and the next connect would silently reuse
+        // a grant the user believes they revoked.
+        let account = email.clone();
+        runtime::spawn(
+            async move { crate::auth::keyring::delete(&account).await },
+            |result| {
+                if let Err(error) = result {
+                    tracing::warn!(error = %format!("{error:#}"), "could not clear the keyring entry");
+                }
+            },
         );
-        let radius = f64::from(width.min(height)) / 2.0;
-        context.arc(
-            f64::from(width) / 2.0,
-            f64::from(height) / 2.0,
-            radius,
-            0.0,
-            std::f64::consts::TAU,
-        );
-        let _ = context.fill();
     });
-    area
+    dialog.present(parent.as_ref());
 }
 
 fn shell(child: &impl IsA<gtk::Widget>) -> adw::ToolbarView {
