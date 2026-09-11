@@ -35,7 +35,10 @@ impl std::fmt::Debug for Tokens {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Tokens")
             .field("access_token", &"<redacted>")
-            .field("refresh_token", &self.refresh_token.as_ref().map(|_| "<redacted>"))
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
             .field("expires_at", &self.expires_at)
             .finish()
     }
@@ -140,7 +143,10 @@ mod tests {
     fn a_token_is_treated_as_expired_a_minute_before_it_actually_is() {
         let tokens = tokens("a", 1_000);
         assert!(!tokens.is_expired_at(930));
-        assert!(tokens.is_expired_at(940), "the skew margin must start at 60s");
+        assert!(
+            tokens.is_expired_at(940),
+            "the skew margin must start at 60s"
+        );
         assert!(tokens.is_expired_at(1_000));
     }
 
@@ -148,7 +154,10 @@ mod tests {
     fn the_debug_impl_never_prints_a_token() {
         let rendered = format!("{:?}", tokens("super-secret", 1_000));
         assert!(!rendered.contains("super-secret"));
-        assert!(!rendered.contains("refresh\""), "the refresh token is the durable one");
+        assert!(
+            !rendered.contains("refresh\""),
+            "the refresh token is the durable one"
+        );
     }
 
     #[test]
@@ -171,8 +180,14 @@ mod tests {
         store(first, &tokens("first-access", 111)).await.unwrap();
         store(second, &tokens("second-access", 222)).await.unwrap();
 
-        assert_eq!(load(first).await.unwrap().unwrap().access_token, "first-access");
-        assert_eq!(load(second).await.unwrap().unwrap().access_token, "second-access");
+        assert_eq!(
+            load(first).await.unwrap().unwrap().access_token,
+            "first-access"
+        );
+        assert_eq!(
+            load(second).await.unwrap().unwrap().access_token,
+            "second-access"
+        );
 
         let listed = accounts().await.unwrap();
         assert!(listed.contains(&first.to_string()));
@@ -181,7 +196,10 @@ mod tests {
         // Deleting one must not disturb the other — SPEC §2.11 in miniature.
         delete(first).await.unwrap();
         assert!(load(first).await.unwrap().is_none());
-        assert_eq!(load(second).await.unwrap().unwrap().access_token, "second-access");
+        assert_eq!(
+            load(second).await.unwrap().unwrap().access_token,
+            "second-access"
+        );
 
         delete(second).await.unwrap();
         assert!(load(second).await.unwrap().is_none());

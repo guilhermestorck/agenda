@@ -37,6 +37,15 @@ pub struct CalendarMetadata {
     pub is_primary: bool,
 }
 
+/// A connected account and the user's display choices for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account {
+    pub email: String,
+    pub label: Option<String>,
+    pub color: Option<String>,
+    pub sort_order: i64,
+}
+
 /// A calendar as stored — server metadata plus the user's choices about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Calendar {
@@ -76,6 +85,18 @@ pub struct Event {
     pub status: String,
     pub updated_at: Option<i64>,
 }
+
+/// Named once so the transactional path and the single-calendar path cannot drift apart.
+/// The DO UPDATE lists only server-owned columns; see the module docs.
+const UPSERT_CALENDAR: &str = "INSERT INTO calendars
+         (account, id, summary, color, timezone, access_role, is_primary)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+     ON CONFLICT(account, id) DO UPDATE SET
+         summary     = excluded.summary,
+         color       = excluded.color,
+         timezone    = excluded.timezone,
+         access_role = excluded.access_role,
+         is_primary  = excluded.is_primary";
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
@@ -136,15 +157,7 @@ impl Store {
         // would write NULL and force a full resync on every metadata refresh.
         self.conn
             .execute(
-                "INSERT INTO calendars
-                     (account, id, summary, color, timezone, access_role, is_primary)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(account, id) DO UPDATE SET
-                     summary     = excluded.summary,
-                     color       = excluded.color,
-                     timezone    = excluded.timezone,
-                     access_role = excluded.access_role,
-                     is_primary  = excluded.is_primary",
+                UPSERT_CALENDAR,
                 params![
                     meta.account,
                     meta.id,
@@ -157,6 +170,107 @@ impl Store {
             )
             .with_context(|| format!("could not store the calendar {}", meta.id))?;
         Ok(())
+    }
+
+    pub fn account_count(&self) -> Result<usize> {
+        let count: i64 = self
+            .conn
+            .query_row("SELECT count(*) FROM accounts", [], |row| row.get(0))
+            .context("could not count the connected accounts")?;
+        Ok(count as usize)
+    }
+
+    /// Record a newly connected account and everything on it, or record none of it.
+    ///
+    /// One transaction because a half-written account is worse than no account: SPEC §2
+    /// requires a failed connect to leave no partial row, and a row with no calendars would
+    /// render as a permanently empty account in the sidebar with no way to repair it.
+    pub fn connect_account(
+        &mut self,
+        email: &str,
+        color: &str,
+        added_at: i64,
+        calendars: &[CalendarMetadata],
+    ) -> Result<()> {
+        let transaction = self
+            .conn
+            .transaction()
+            .context("could not begin the connect transaction")?;
+
+        transaction
+            .execute(
+                "INSERT INTO accounts (email, provider, added_at, color)
+                 VALUES (?1, 'google', ?2, ?3)
+                 ON CONFLICT(email) DO NOTHING",
+                params![email, added_at, color],
+            )
+            .with_context(|| format!("could not add the account {email}"))?;
+
+        for calendar in calendars {
+            transaction
+                .execute(
+                    UPSERT_CALENDAR,
+                    params![
+                        calendar.account,
+                        calendar.id,
+                        calendar.summary,
+                        calendar.color,
+                        calendar.timezone,
+                        calendar.access_role,
+                        calendar.is_primary,
+                    ],
+                )
+                .with_context(|| format!("could not store the calendar {}", calendar.id))?;
+        }
+
+        transaction
+            .commit()
+            .context("could not commit the connect transaction")?;
+        Ok(())
+    }
+
+    /// Disconnect an account. Cascades to its calendars and their events.
+    pub fn remove_account(&self, email: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM accounts WHERE email = ?1", params![email])
+            .with_context(|| format!("could not remove the account {email}"))?;
+        Ok(())
+    }
+
+    /// Every connected account, in the user's chosen order. Sorted by the user's grouping
+    /// first and the address only as a tiebreak, because the ordering is theirs, not
+    /// Google's.
+    pub fn accounts(&self) -> Result<Vec<Account>> {
+        let mut statement = self.conn.prepare(
+            "SELECT email, label, color, sort_order FROM accounts ORDER BY sort_order, email",
+        )?;
+        let accounts = statement
+            .query_map([], |row| {
+                Ok(Account {
+                    email: row.get(0)?,
+                    label: row.get(1)?,
+                    color: row.get(2)?,
+                    sort_order: row.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("could not read the connected accounts")?;
+        Ok(accounts)
+    }
+
+    /// One account's calendars, primary first so the account's own calendar heads its group.
+    pub fn calendars(&self, account: &str) -> Result<Vec<Calendar>> {
+        let mut statement = self.conn.prepare(
+            "SELECT account, id, summary, color, timezone, access_role, is_primary,
+                    visible, user_color, sync_token, synced_at
+             FROM calendars WHERE account = ?1
+             ORDER BY is_primary DESC, summary",
+        )?;
+        let calendars = statement
+            .query_map(params![account], calendar_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .with_context(|| format!("could not read the calendars for {account}"))?;
+        Ok(calendars)
     }
 
     pub fn calendar(&self, account: &str, id: &str) -> Result<Option<Calendar>> {
@@ -487,6 +601,31 @@ mod tests {
             .unwrap();
         assert_eq!(personal.summary, "Personal");
         assert_eq!(work.summary, "Work");
+    }
+
+    #[test]
+    fn the_sidebar_sees_every_account_and_each_ones_calendars() {
+        let store = two_accounts();
+        let accounts = store.accounts().unwrap();
+        assert_eq!(
+            accounts.len(),
+            2,
+            "every account is listed, not a selected one"
+        );
+        assert_eq!(accounts[0].email, "personal@example.com");
+        assert_eq!(accounts[0].color.as_deref(), Some("#3584e4"));
+
+        let work = store.calendars("work@example.com").unwrap();
+        assert_eq!(work.len(), 2);
+        assert!(
+            work[0].is_primary,
+            "an account's own calendar heads its group"
+        );
+        assert_eq!(
+            store.calendars("personal@example.com").unwrap().len(),
+            1,
+            "one account's calendars must not leak into another's group"
+        );
     }
 
     #[test]
