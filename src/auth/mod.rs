@@ -1,6 +1,7 @@
 //! OAuth2 for installed applications: PKCE, a loopback redirect, and tokens kept in the
 //! Secret Service rather than on disk.
 
+pub mod keyring;
 mod loopback;
 mod pkce;
 
