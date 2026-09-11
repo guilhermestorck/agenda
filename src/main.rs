@@ -1,12 +1,10 @@
 //! agenda — a GTK4/libadwaita calendar showing several Google accounts in one week.
 
-mod config;
-
 use adw::prelude::*;
 use gtk::glib;
 use tracing_subscriber::EnvFilter;
 
-use config::{Credentials, Paths};
+use agenda::config::{Credentials, Paths};
 
 const APP_ID: &str = "io.github.guilhermestorck.agenda";
 
