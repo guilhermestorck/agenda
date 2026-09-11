@@ -11,7 +11,7 @@ use crate::auth::{self, RefreshRejected};
 use crate::config::Credentials;
 use crate::store::CalendarMetadata;
 
-use super::wire::{CalendarListEntry, CalendarListPage, calendar_metadata};
+use super::wire::{CalendarListEntry, CalendarListPage, EventsPage, calendar_metadata};
 
 pub const API_BASE: &str = "https://www.googleapis.com/calendar/v3";
 
@@ -62,6 +62,19 @@ impl Session {
         self.api_base = api_base.to_string();
         self.token_endpoint = token_endpoint.to_string();
         self
+    }
+
+    /// Point a session at a stand-in server. Test-only, so the real endpoints cannot be
+    /// redirected by anything shipped.
+    #[cfg(test)]
+    pub fn for_tests(
+        account: &str,
+        credentials: Credentials,
+        tokens: auth::keyring::Tokens,
+        api_base: &str,
+        token_endpoint: &str,
+    ) -> Self {
+        Self::new(account, credentials, tokens).against(api_base, token_endpoint)
     }
 
     /// GET an API path, refreshing the access token once if Google rejects it.
@@ -155,6 +168,29 @@ impl Session {
         }
     }
 
+    /// One page of a calendar's events.
+    ///
+    /// `singleEvents` is deliberately *not* set: Google would expand recurring series
+    /// server-side, which loses the RRULE and makes a week of a long series hundreds of rows
+    /// instead of one. Expansion is ours (SPEC §3).
+    pub async fn events_page(
+        &mut self,
+        calendar_id: &str,
+        page_token: Option<&str>,
+    ) -> Result<EventsPage> {
+        let mut query = vec![
+            ("maxResults", "2500".to_string()),
+            ("showDeleted", "true".to_string()),
+        ];
+        if let Some(token) = page_token {
+            query.push(("pageToken", token.to_string()));
+        }
+
+        let path = format!("/calendars/{}/events", urlencode(calendar_id));
+        let body = self.get(&path, &query).await?;
+        serde_json::from_str(&body).context("the events response was not readable")
+    }
+
     /// The calendars, as this app's own metadata rather than Google's shape.
     pub async fn calendars(&mut self) -> Result<Vec<CalendarMetadata>> {
         let account = self.account.clone();
@@ -165,6 +201,20 @@ impl Session {
             .map(|entry| calendar_metadata(&account, entry))
             .collect())
     }
+}
+
+/// Calendar ids are email addresses and group addresses containing `@` and `#`, which must
+/// not be taken for path or fragment syntax.
+fn urlencode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (byte as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -236,6 +286,19 @@ mod tests {
             },
         )
         .against(&fake.base, &format!("{}/token", fake.base))
+    }
+
+    #[test]
+    fn a_calendar_id_is_escaped_before_it_becomes_a_path_segment() {
+        // Calendar ids are addresses: they carry '@', and holiday calendars carry '#'.
+        // Left raw, the '#' truncates the request at a fragment and the call hits the wrong
+        // endpoint entirely.
+        assert_eq!(urlencode("work@example.com"), "work%40example.com");
+        assert_eq!(
+            urlencode("es.spanish#holiday@group.v.calendar.google.com"),
+            "es.spanish%23holiday%40group.v.calendar.google.com"
+        );
+        assert_eq!(urlencode("primary"), "primary");
     }
 
     #[tokio::test]

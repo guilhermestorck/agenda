@@ -1,0 +1,32 @@
+{
+  "kind": "calendar#events",
+  "etag": "\"p33o8k4tqfno30i\"",
+  "timeZone": "Europe/Madrid",
+  "accessRole": "reader",
+  "items": [
+    {
+      "kind": "calendar#event",
+      "etag": "\"3400000000000007\"",
+      "id": "copy_on_personal_account",
+      "status": "confirmed",
+      "summary": "Quarterly planning",
+      "updated": "2026-09-01T09:00:00.000Z",
+      "start": { "dateTime": "2026-09-17T14:00:00+02:00", "timeZone": "Europe/Madrid" },
+      "end": { "dateTime": "2026-09-17T15:00:00+02:00", "timeZone": "Europe/Madrid" },
+      "iCalUID": "quarterly-planning-2026q4@google.com",
+      "sequence": 0
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3400000000000008\"",
+      "id": "copy_on_work_account",
+      "status": "confirmed",
+      "summary": "Quarterly planning",
+      "updated": "2026-09-01T09:00:00.000Z",
+      "start": { "dateTime": "2026-09-17T14:00:00+02:00", "timeZone": "Europe/Madrid" },
+      "end": { "dateTime": "2026-09-17T15:00:00+02:00", "timeZone": "Europe/Madrid" },
+      "iCalUID": "quarterly-planning-2026q4@google.com",
+      "sequence": 0
+    }
+  ]
+}

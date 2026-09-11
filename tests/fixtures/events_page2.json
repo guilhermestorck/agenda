@@ -1,0 +1,22 @@
+{
+  "kind": "calendar#events",
+  "etag": "\"p33o8k4tqfno30h\"",
+  "summary": "work@example.com",
+  "timeZone": "Europe/Madrid",
+  "accessRole": "owner",
+  "nextSyncToken": "CJDFnbHF7YkDEJDFnbHF7YkDGAUg",
+  "items": [
+    {
+      "kind": "calendar#event",
+      "etag": "\"3400000000000006\"",
+      "id": "secondpage001",
+      "status": "confirmed",
+      "summary": "On the second page",
+      "updated": "2026-09-01T09:00:00.000Z",
+      "start": { "dateTime": "2026-09-18T11:00:00+02:00", "timeZone": "Europe/Madrid" },
+      "end": { "dateTime": "2026-09-18T12:00:00+02:00", "timeZone": "Europe/Madrid" },
+      "iCalUID": "secondpage001@google.com",
+      "sequence": 0
+    }
+  ]
+}

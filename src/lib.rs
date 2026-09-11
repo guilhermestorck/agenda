@@ -11,4 +11,5 @@ pub mod config;
 pub mod google;
 pub mod runtime;
 pub mod store;
+pub mod sync;
 pub mod ui;

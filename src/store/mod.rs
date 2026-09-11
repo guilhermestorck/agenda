@@ -273,6 +273,65 @@ impl Store {
         Ok(calendars)
     }
 
+    /// Record Google's cursor for a calendar, and when it was last brought up to date.
+    /// Written only by sync; `NULL` forces the next run to resync in full.
+    pub fn set_sync_token(
+        &self,
+        account: &str,
+        calendar_id: &str,
+        sync_token: Option<&str>,
+        synced_at: i64,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE calendars SET sync_token = ?3, synced_at = ?4
+                 WHERE account = ?1 AND id = ?2",
+                params![account, calendar_id, sync_token, synced_at],
+            )
+            .with_context(|| format!("could not record the sync token for {calendar_id}"))?;
+        Ok(())
+    }
+
+    /// Remove one event. Google reports a deletion as a `cancelled` event carrying little
+    /// more than an id, so this takes no more than that.
+    pub fn delete_event(&self, account: &str, calendar_id: &str, id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM events WHERE account = ?1 AND calendar_id = ?2 AND id = ?3",
+                params![account, calendar_id, id],
+            )
+            .with_context(|| format!("could not delete the event {id}"))?;
+        Ok(())
+    }
+
+    /// Drop everything on a calendar, for the resync that follows a refused sync token.
+    pub fn clear_calendar(&self, account: &str, calendar_id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM events WHERE account = ?1 AND calendar_id = ?2",
+                params![account, calendar_id],
+            )
+            .with_context(|| format!("could not clear {calendar_id}"))?;
+        Ok(())
+    }
+
+    /// Set the user-owned columns directly, for tests that need a preference in place
+    /// before exercising a sync. The real setters arrive with the styling task.
+    #[cfg(test)]
+    pub fn set_user_style_for_tests(
+        &self,
+        account: &str,
+        calendar_id: &str,
+        visible: bool,
+        user_color: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE calendars SET visible = ?3, user_color = ?4 WHERE account = ?1 AND id = ?2",
+            params![account, calendar_id, visible, user_color],
+        )?;
+        Ok(())
+    }
+
     pub fn calendar(&self, account: &str, id: &str) -> Result<Option<Calendar>> {
         self.conn
             .query_row(

@@ -1,0 +1,86 @@
+{
+  "kind": "calendar#events",
+  "etag": "\"p33o8k4tqfno30g\"",
+  "summary": "work@example.com",
+  "updated": "2026-09-01T10:00:00.000Z",
+  "timeZone": "Europe/Madrid",
+  "accessRole": "owner",
+  "nextPageToken": "CjgKGjRkYzM4ZjE2",
+  "items": [
+    {
+      "kind": "calendar#event",
+      "etag": "\"3400000000000000\"",
+      "id": "timed001",
+      "status": "confirmed",
+      "summary": "Standup",
+      "description": "Daily sync",
+      "location": "Meet",
+      "updated": "2026-09-01T09:00:00.000Z",
+      "start": { "dateTime": "2026-09-14T09:30:00+02:00", "timeZone": "Europe/Madrid" },
+      "end": { "dateTime": "2026-09-14T09:45:00+02:00", "timeZone": "Europe/Madrid" },
+      "iCalUID": "timed001@google.com",
+      "sequence": 0
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3400000000000001\"",
+      "id": "allday001",
+      "status": "confirmed",
+      "summary": "Company holiday",
+      "updated": "2026-09-01T09:00:00.000Z",
+      "start": { "date": "2026-09-15" },
+      "end": { "date": "2026-09-16" },
+      "iCalUID": "allday001@google.com",
+      "sequence": 0
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3400000000000002\"",
+      "id": "overnight001",
+      "status": "confirmed",
+      "summary": "Night shift",
+      "updated": "2026-09-01T09:00:00.000Z",
+      "start": { "dateTime": "2026-09-16T22:00:00+02:00", "timeZone": "Europe/Madrid" },
+      "end": { "dateTime": "2026-09-17T06:00:00+02:00", "timeZone": "Europe/Madrid" },
+      "iCalUID": "overnight001@google.com",
+      "sequence": 0
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3400000000000003\"",
+      "id": "master001",
+      "status": "confirmed",
+      "summary": "Weekly review",
+      "updated": "2026-09-01T09:00:00.000Z",
+      "start": { "dateTime": "2026-09-14T16:00:00+02:00", "timeZone": "Europe/Madrid" },
+      "end": { "dateTime": "2026-09-14T17:00:00+02:00", "timeZone": "Europe/Madrid" },
+      "recurrence": [
+        "RRULE:FREQ=WEEKLY;BYDAY=MO",
+        "EXDATE;TZID=Europe/Madrid:20260928T160000",
+        "RDATE;TZID=Europe/Madrid:20261001T160000"
+      ],
+      "iCalUID": "master001@google.com",
+      "sequence": 0
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3400000000000004\"",
+      "id": "master001_20260921T140000Z",
+      "status": "confirmed",
+      "summary": "Weekly review (moved)",
+      "updated": "2026-09-02T09:00:00.000Z",
+      "start": { "dateTime": "2026-09-21T17:30:00+02:00", "timeZone": "Europe/Madrid" },
+      "end": { "dateTime": "2026-09-21T18:30:00+02:00", "timeZone": "Europe/Madrid" },
+      "recurringEventId": "master001",
+      "originalStartTime": { "dateTime": "2026-09-21T16:00:00+02:00", "timeZone": "Europe/Madrid" },
+      "iCalUID": "master001@google.com",
+      "sequence": 1
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3400000000000005\"",
+      "id": "deleted001",
+      "status": "cancelled"
+    }
+  ]
+}
