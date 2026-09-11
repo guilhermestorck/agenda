@@ -10,10 +10,12 @@ base64 = "0.23.1"
 getrandom = "0.4.3"
 gtk = { version = "0.11.4", package = "gtk4" }
 oo7 = { version = "0.6.0", features = ["tokio", "native_crypto"] }
+reqwest = { version = "0.13.5", features = ["form", "json"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.10"
+tiny_http = "0.12.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
