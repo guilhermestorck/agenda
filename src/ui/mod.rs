@@ -291,21 +291,6 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         name.set_tooltip_text(Some(&account.email));
         heading.append(&name);
 
-        if ui.needs_reconnect.borrow().contains(&account.email) {
-            // The account's events stay on the grid: they were real when they were synced,
-            // and blanking them would lose more than it explains.
-            let reconnect = gtk::Button::with_label("Reconnect");
-            reconnect.add_css_class("suggested-action");
-            reconnect.set_valign(Align::Center);
-            reconnect.set_tooltip_text(Some(&format!(
-                "Google no longer accepts the stored credentials for {}",
-                account.email
-            )));
-            let ui = ui.clone();
-            reconnect.connect_clicked(move |_| start_connect(&ui));
-            heading.append(&reconnect);
-        }
-
         let menu = gtk::MenuButton::builder()
             .icon_name("view-more-symbolic")
             .valign(Align::Center)
@@ -314,6 +299,26 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         menu.set_popover(Some(&account_menu(ui, &account)));
         heading.append(&menu);
         group.append(&heading);
+
+        if ui.needs_reconnect.borrow().contains(&account.email) {
+            // On its own row, not beside the name: inline it squeezed a 30-character address
+            // down to an ellipsis, so the button said which account was broken by hiding it.
+            //
+            // The account's events stay on the grid meanwhile. They were real when they were
+            // synced, and blanking them would lose more than it explains.
+            let reconnect = gtk::Button::with_label("Reconnect");
+            reconnect.add_css_class("suggested-action");
+            reconnect.set_margin_start(12);
+            reconnect.set_margin_end(12);
+            reconnect.set_margin_top(6);
+            reconnect.set_tooltip_text(Some(&format!(
+                "Google no longer accepts the stored credentials for {}",
+                account.email
+            )));
+            let ui = ui.clone();
+            reconnect.connect_clicked(move |_| start_connect(&ui));
+            group.append(&reconnect);
+        }
 
         for calendar in calendars {
             let row = gtk::Box::new(Orientation::Horizontal, 8);
