@@ -46,6 +46,23 @@ Google Calendar access needs an OAuth client that only you can create. See
 [docs/google-oauth-setup.md](docs/google-oauth-setup.md); it takes about ten minutes and is
 a one-time step.
 
+## Settings
+
+Reminder preferences live in `~/.config/agenda/settings.toml`, and all of them are optional:
+
+```toml
+notify_lead_minutes = 10   # how long before an event to notify
+all_day_notify_hour = 9    # what time to announce an all-day event
+```
+
+Those are the defaults. The lead time cascades, most specific winning: an event's own
+reminder from Google, then the calendar's setting, then the account's, then this file. The
+per-account and per-calendar settings are in the sidebar.
+
+An all-day event has no start time to count back from, so its lead is read as whole days and
+anchored to `all_day_notify_hour`: a lead under a day means that morning, a day or more
+means that many mornings earlier.
+
 ## Privacy and terms
 
 - [Privacy policy](https://guilhermestorck.github.io/agenda/privacy-policy.html)

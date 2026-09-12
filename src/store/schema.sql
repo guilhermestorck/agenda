@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS accounts (
     -- a palette on connect, so a newly added account is never unmarked.
     color       TEXT,
     -- Sidebar ordering: the user's grouping, not Google's.
-    sort_order  INTEGER NOT NULL DEFAULT 0
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    -- User-owned. NULL means "use the global default"; see the reminder cascade in notify.
+    notify_lead_minutes INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS calendars (
@@ -37,6 +39,8 @@ CREATE TABLE IF NOT EXISTS calendars (
     -- User-owned: sync must never overwrite these two.
     visible     INTEGER NOT NULL DEFAULT 1,
     user_color  TEXT,                     -- NULL means "use Google's"
+    -- User-owned. NULL means "use the account's".
+    notify_lead_minutes INTEGER,
     -- Google's opaque incremental cursor; NULL forces a full resync.
     sync_token  TEXT,
     synced_at   INTEGER,
@@ -68,6 +72,10 @@ CREATE TABLE IF NOT EXISTS events (
     recurring_event_id TEXT,
     original_start_utc INTEGER,
     status        TEXT NOT NULL DEFAULT 'confirmed',
+    -- Google's own reminder for this event, in minutes before it starts: the earliest
+    -- popup override it carries. NULL means the event uses its calendar's default, which
+    -- is where our cascade picks up.
+    reminder_minutes INTEGER,
     -- The server's `updated` stamp when sync supplies one, our write time otherwise.
     updated_at    INTEGER,
     PRIMARY KEY (account, calendar_id, id),

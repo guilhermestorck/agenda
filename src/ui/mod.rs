@@ -14,7 +14,7 @@ use adw::prelude::*;
 use gtk::glib;
 use gtk::{Align, Orientation};
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use chrono::{Duration, TimeZone};
@@ -22,6 +22,7 @@ use chrono::{Duration, TimeZone};
 use crate::accounts::style::resolve;
 use crate::accounts::{self, Connected};
 use crate::config::{Credentials, Paths};
+use crate::notify;
 use crate::recur::occurrences_in_window;
 use crate::runtime;
 use crate::store::Store;
@@ -45,6 +46,10 @@ struct Ui {
     needs_reconnect: RefCell<HashSet<String>>,
     /// `None` when no StatusNotifierItem host answered. The window works regardless.
     tray: RefCell<Option<ksni::blocking::Handle<tray::Item>>>,
+    settings: notify::Settings,
+    /// The instant reminders were last checked up to. Everything due after it and at or
+    /// before now is delivered, which is what makes a suspend across a reminder harmless.
+    reminded_to: Cell<i64>,
 }
 
 pub fn build(app: &adw::Application) {
@@ -108,13 +113,24 @@ fn startup() -> anyhow::Result<gtk::Widget> {
         week: week::Week::new(),
         needs_reconnect: RefCell::new(HashSet::new()),
         tray: RefCell::new(None),
+        settings: notify::Settings::load(&paths.settings()),
+        // Backdated, so launching a few minutes after a reminder came due still tells the
+        // user about the meeting they are about to be late for. `due` already drops anything
+        // whose event has ended, so this cannot produce a flood of stale notices.
+        reminded_to: Cell::new(chrono::Utc::now().timestamp() - STARTUP_GRACE),
     });
 
     let content = build_content(&ui);
     refresh_sidebar(&ui);
     refresh_week(&ui);
+    tracing::debug!(
+        lead = ui.settings.lead_minutes,
+        all_day_hour = ui.settings.all_day_hour,
+        "reminder settings"
+    );
     start_syncing(&ui, scheduler::MIN_INTERVAL);
     start_tray(&ui);
+    start_reminders(&ui);
     Ok(content)
 }
 
@@ -350,6 +366,37 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
             }
             row.append(&label);
 
+            let reminders = gtk::MenuButton::builder()
+                .icon_name("alarm-symbolic")
+                .valign(Align::Center)
+                .tooltip_text("When to be reminded about this calendar")
+                .build();
+            reminders.add_css_class("flat");
+            {
+                let content = gtk::Box::new(Orientation::Vertical, 6);
+                content.set_margin_top(8);
+                content.set_margin_bottom(8);
+                content.set_margin_start(8);
+                content.set_margin_end(8);
+                let ui = ui.clone();
+                let (acct, id) = (calendar.account.clone(), calendar.id.clone());
+                content.append(&lead_control(
+                    calendar.notify_lead_minutes,
+                    "this account's reminder time",
+                    move |minutes| {
+                        let (acct, id) = (acct.clone(), id.clone());
+                        apply(&ui, move |store| {
+                            store.set_calendar_notify_lead(&acct, &id, minutes)
+                        });
+                    },
+                ));
+                reminders.set_popover(Some(&gtk::Popover::builder().child(&content).build()));
+            }
+            if calendar.notify_lead_minutes.is_some() {
+                reminders.add_css_class("accent");
+            }
+            row.append(&reminders);
+
             // Only offered when there is something to undo, so the row stays quiet for a
             // calendar the user has never touched.
             if calendar.user_color.is_some() {
@@ -372,6 +419,56 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         }
         ui.sidebar.append(&group);
     }
+}
+
+/// A reminder lead with an explicit "inherit" state.
+///
+/// A spin button cannot be empty, and zero is a real choice — "tell me as it starts" — so
+/// inheriting needs a control of its own rather than being spelled as a blank or a zero.
+fn lead_control(
+    current: Option<i64>,
+    inherits_from: &str,
+    on_change: impl Fn(Option<i64>) + 'static,
+) -> gtk::Box {
+    let row = gtk::Box::new(Orientation::Vertical, 6);
+
+    let inherit = gtk::CheckButton::with_label(&format!("Use {inherits_from}"));
+    inherit.set_active(current.is_none());
+
+    let minutes = gtk::SpinButton::with_range(0.0, 60.0 * 24.0 * 14.0, 5.0);
+    minutes.set_value(current.unwrap_or(10) as f64);
+    minutes.set_sensitive(current.is_some());
+
+    let label = gtk::Label::new(Some("Minutes before"));
+    label.add_css_class("dim-label");
+    label.add_css_class("caption");
+    label.set_halign(Align::Start);
+
+    let on_change = Rc::new(on_change);
+    {
+        let (minutes, on_change) = (minutes.clone(), on_change.clone());
+        inherit.connect_toggled(move |button| {
+            minutes.set_sensitive(!button.is_active());
+            on_change(if button.is_active() {
+                None
+            } else {
+                Some(minutes.value() as i64)
+            });
+        });
+    }
+    {
+        let (inherit, on_change) = (inherit.clone(), on_change.clone());
+        minutes.connect_value_changed(move |spin| {
+            if !inherit.is_active() {
+                on_change(Some(spin.value() as i64));
+            }
+        });
+    }
+
+    row.append(&inherit);
+    row.append(&label);
+    row.append(&minutes);
+    row
 }
 
 /// Rename and disconnect, kept out of the row itself so the sidebar stays a list of
@@ -401,6 +498,23 @@ fn account_menu(ui: &Rc<Ui>, account: &crate::store::Account) -> gtk::Popover {
     }
     content.append(&entry);
 
+    content.append(&gtk::Separator::new(Orientation::Horizontal));
+    {
+        let ui = ui.clone();
+        let email = account.email.clone();
+        content.append(&lead_control(
+            account.notify_lead_minutes,
+            "the default reminder time",
+            move |minutes| {
+                let email = email.clone();
+                apply(&ui, move |store| {
+                    store.set_account_notify_lead(&email, minutes)
+                });
+            },
+        ));
+    }
+    content.append(&gtk::Separator::new(Orientation::Horizontal));
+
     let remove = gtk::Button::with_label("Disconnect account");
     remove.add_css_class("destructive-action");
     {
@@ -428,6 +542,99 @@ fn read_groups(ui: &Rc<Ui>) -> anyhow::Result<Vec<Group>> {
             Ok((account, calendars))
         })
         .collect()
+}
+
+/// How often to look for reminders that have come due.
+///
+/// A wall-clock comparison on a short tick, rather than one timer per event: a timer set for
+/// three hours' time does not survive a suspend that spans it, and a calendar application
+/// whose reminders stop working when the laptop lid closes is not one (SPEC §2.9).
+const REMINDER_TICK: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How far back a fresh start looks for reminders it missed while not running.
+const STARTUP_GRACE: i64 = 15 * 60;
+
+fn start_reminders(ui: &Rc<Ui>) {
+    let ui = ui.clone();
+    glib::timeout_add_local(REMINDER_TICK, move || {
+        deliver_due_reminders(&ui);
+        glib::ControlFlow::Continue
+    });
+}
+
+/// Everything scheduled in the near future, with the instant each should fire.
+fn scheduled_reminders(ui: &Rc<Ui>, from: i64, to: i64) -> Vec<(crate::recur::Occurrence, i64)> {
+    let Ok(store) = ui.store.lock() else {
+        return Vec::new();
+    };
+
+    let leads: HashMap<String, Option<i64>> = match store.accounts() {
+        Ok(accounts) => accounts
+            .into_iter()
+            .map(|account| (account.email, account.notify_lead_minutes))
+            .collect(),
+        Err(_) => return Vec::new(),
+    };
+    let mut calendar_leads: HashMap<(String, String), Option<i64>> = HashMap::new();
+    for email in leads.keys() {
+        if let Ok(calendars) = store.calendars(email) {
+            for calendar in calendars {
+                calendar_leads.insert(
+                    (calendar.account.clone(), calendar.id.clone()),
+                    calendar.notify_lead_minutes,
+                );
+            }
+        }
+    }
+
+    let occurrences = occurrences_in_window(&store, from, to).unwrap_or_default();
+    let zone = ui.week.zone();
+    occurrences
+        .into_iter()
+        .filter(|occurrence| occurrence.event.status != "cancelled")
+        .filter_map(|occurrence| {
+            let lead = notify::lead_minutes(
+                occurrence.event.reminder_minutes,
+                calendar_leads
+                    .get(&(
+                        occurrence.event.account.clone(),
+                        occurrence.event.calendar_id.clone(),
+                    ))
+                    .copied()
+                    .flatten(),
+                leads.get(&occurrence.event.account).copied().flatten(),
+                ui.settings.lead_minutes,
+            );
+            let at = notify::notify_at(&occurrence, lead, ui.settings.all_day_hour, zone)?;
+            Some((occurrence, at))
+        })
+        .collect()
+}
+
+fn deliver_due_reminders(ui: &Rc<Ui>) {
+    let now = chrono::Utc::now().timestamp();
+    let since = ui.reminded_to.get();
+    if now <= since {
+        // The clock went backwards — a correction, or a resume. Re-anchor rather than
+        // replaying every reminder in between.
+        ui.reminded_to.set(now);
+        return;
+    }
+
+    // Wide enough on both sides that a long suspend still finds what it slept through, and
+    // an all-day reminder set days ahead is already in the window.
+    let scheduled = scheduled_reminders(ui, since - 7 * 24 * 3600, now + 7 * 24 * 3600);
+    let zone = ui.week.zone();
+    for occurrence in notify::due(&scheduled, since, now) {
+        let title = if occurrence.event.summary.is_empty() {
+            "(no title)"
+        } else {
+            &occurrence.event.summary
+        };
+        tracing::info!(event = %occurrence.event.id, "reminding");
+        notify::show(title, &notify::body_for(occurrence, zone, now));
+    }
+    ui.reminded_to.set(now);
 }
 
 /// Put agenda in the system tray, and act on what the user does there.

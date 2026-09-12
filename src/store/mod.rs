@@ -44,6 +44,9 @@ pub struct Account {
     pub label: Option<String>,
     pub color: Option<String>,
     pub sort_order: i64,
+    /// Minutes before an event to notify, for this account's calendars. `None` defers to
+    /// the global default.
+    pub notify_lead_minutes: Option<i64>,
     /// Google's own name for the account, refreshed on connect.
     pub display_name: Option<String>,
     pub picture_url: Option<String>,
@@ -69,6 +72,8 @@ pub struct Calendar {
     pub is_primary: bool,
     pub visible: bool,
     pub user_color: Option<String>,
+    /// Minutes before an event to notify, for this calendar. `None` defers to the account.
+    pub notify_lead_minutes: Option<i64>,
     pub sync_token: Option<String>,
     pub synced_at: Option<i64>,
 }
@@ -94,6 +99,9 @@ pub struct Event {
     pub recurring_event_id: Option<String>,
     pub original_start_utc: Option<i64>,
     pub status: String,
+    /// Google's own reminder, in minutes before the start. `None` means the event carries
+    /// none of its own and the calendar's setting applies.
+    pub reminder_minutes: Option<i64>,
     pub updated_at: Option<i64>,
 }
 
@@ -155,6 +163,9 @@ impl Store {
         for (table, column, kind) in [
             ("accounts", "display_name", "TEXT"),
             ("accounts", "picture_url", "TEXT"),
+            ("accounts", "notify_lead_minutes", "INTEGER"),
+            ("calendars", "notify_lead_minutes", "INTEGER"),
+            ("events", "reminder_minutes", "INTEGER"),
         ] {
             ensure_column(&conn, table, column, kind)?;
         }
@@ -275,7 +286,8 @@ impl Store {
     /// Google's.
     pub fn accounts(&self) -> Result<Vec<Account>> {
         let mut statement = self.conn.prepare(
-            "SELECT email, label, color, sort_order, display_name, picture_url
+            "SELECT email, label, color, sort_order, display_name, picture_url,
+                    notify_lead_minutes
              FROM accounts ORDER BY sort_order, email",
         )?;
         let accounts = statement
@@ -287,6 +299,7 @@ impl Store {
                     sort_order: row.get(3)?,
                     display_name: row.get(4)?,
                     picture_url: row.get(5)?,
+                    notify_lead_minutes: row.get(6)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -298,7 +311,7 @@ impl Store {
     pub fn calendars(&self, account: &str) -> Result<Vec<Calendar>> {
         let mut statement = self.conn.prepare(
             "SELECT account, id, summary, color, timezone, access_role, is_primary,
-                    visible, user_color, sync_token, synced_at
+                    visible, user_color, notify_lead_minutes, sync_token, synced_at
              FROM calendars WHERE account = ?1
              ORDER BY is_primary DESC, summary",
         )?;
@@ -367,6 +380,12 @@ impl Store {
         self.update_account(email, "sort_order", params![email, sort_order])
     }
 
+    /// Minutes before an event to notify, for this account. `None` defers to the global
+    /// default.
+    pub fn set_account_notify_lead(&self, email: &str, minutes: Option<i64>) -> Result<()> {
+        self.update_account(email, "notify_lead_minutes", params![email, minutes])
+    }
+
     fn update_account(
         &self,
         email: &str,
@@ -401,6 +420,21 @@ impl Store {
             calendar_id,
             "user_color",
             params![account, calendar_id, user_color],
+        )
+    }
+
+    /// Minutes before an event to notify, for this calendar. `None` defers to the account.
+    pub fn set_calendar_notify_lead(
+        &self,
+        account: &str,
+        calendar_id: &str,
+        minutes: Option<i64>,
+    ) -> Result<()> {
+        self.update_calendar(
+            account,
+            calendar_id,
+            "notify_lead_minutes",
+            params![account, calendar_id, minutes],
         )
     }
 
@@ -453,7 +487,8 @@ impl Store {
         let mut statement = self.conn.prepare(
             "SELECT e.account, e.calendar_id, e.id, e.ical_uid, e.etag, e.summary,
                     e.description, e.location, e.start_utc, e.end_utc, e.timezone, e.all_day,
-                    e.rrule, e.recurring_event_id, e.original_start_utc, e.status, e.updated_at
+                    e.rrule, e.recurring_event_id, e.original_start_utc, e.status,
+                    e.reminder_minutes, e.updated_at
              FROM events e
              JOIN calendars c ON c.account = e.account AND c.id = e.calendar_id
              WHERE c.visible = 1 AND (
@@ -478,7 +513,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT account, id, summary, color, timezone, access_role, is_primary,
-                        visible, user_color, sync_token, synced_at
+                        visible, user_color, notify_lead_minutes, sync_token, synced_at
                  FROM calendars WHERE account = ?1 AND id = ?2",
                 params![account, id],
                 calendar_from_row,
@@ -493,9 +528,10 @@ impl Store {
                 "INSERT INTO events
                      (account, calendar_id, id, ical_uid, etag, summary, description,
                       location, start_utc, end_utc, timezone, all_day, rrule,
-                      recurring_event_id, original_start_utc, status, updated_at)
+                      recurring_event_id, original_start_utc, status, reminder_minutes,
+                      updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                         ?15, ?16, ?17)
+                         ?15, ?16, ?17, ?18)
                  ON CONFLICT(account, calendar_id, id) DO UPDATE SET
                      ical_uid           = excluded.ical_uid,
                      etag               = excluded.etag,
@@ -510,6 +546,7 @@ impl Store {
                      recurring_event_id = excluded.recurring_event_id,
                      original_start_utc = excluded.original_start_utc,
                      status             = excluded.status,
+                     reminder_minutes   = excluded.reminder_minutes,
                      updated_at         = excluded.updated_at",
                 params![
                     event.account,
@@ -528,6 +565,7 @@ impl Store {
                     event.recurring_event_id,
                     event.original_start_utc,
                     event.status,
+                    event.reminder_minutes,
                     event.updated_at,
                 ],
             )
@@ -542,7 +580,7 @@ impl Store {
         let mut statement = self.conn.prepare(
             "SELECT account, calendar_id, id, ical_uid, etag, summary, description, location,
                     start_utc, end_utc, timezone, all_day, rrule, recurring_event_id,
-                    original_start_utc, status, updated_at
+                    original_start_utc, status, reminder_minutes, updated_at
              FROM events
              WHERE start_utc < ?2 AND end_utc > ?1
              ORDER BY start_utc",
@@ -583,8 +621,9 @@ fn calendar_from_row(row: &Row<'_>) -> rusqlite::Result<Calendar> {
         is_primary: row.get(6)?,
         visible: row.get(7)?,
         user_color: row.get(8)?,
-        sync_token: row.get(9)?,
-        synced_at: row.get(10)?,
+        notify_lead_minutes: row.get(9)?,
+        sync_token: row.get(10)?,
+        synced_at: row.get(11)?,
     })
 }
 
@@ -606,7 +645,8 @@ fn event_from_row(row: &Row<'_>) -> rusqlite::Result<Event> {
         recurring_event_id: row.get(13)?,
         original_start_utc: row.get(14)?,
         status: row.get(15)?,
-        updated_at: row.get(16)?,
+        reminder_minutes: row.get(16)?,
+        updated_at: row.get(17)?,
     })
 }
 
@@ -666,6 +706,7 @@ mod tests {
             recurring_event_id: None,
             original_start_utc: None,
             status: "confirmed".to_string(),
+            reminder_minutes: None,
             updated_at: None,
         }
     }
@@ -967,6 +1008,65 @@ mod tests {
             "the other account is untouched"
         );
         assert_eq!(personal.label, None);
+    }
+
+    #[test]
+    fn a_reminder_lead_can_be_set_and_cleared_at_both_levels() {
+        let store = two_accounts();
+        store
+            .set_account_notify_lead("work@example.com", Some(30))
+            .unwrap();
+        store
+            .set_calendar_notify_lead("work@example.com", "team", Some(5))
+            .unwrap();
+
+        let accounts = store.accounts().unwrap();
+        let work = accounts
+            .iter()
+            .find(|a| a.email == "work@example.com")
+            .unwrap();
+        assert_eq!(work.notify_lead_minutes, Some(30));
+        assert_eq!(
+            store
+                .calendar("work@example.com", "team")
+                .unwrap()
+                .unwrap()
+                .notify_lead_minutes,
+            Some(5)
+        );
+
+        // Clearing must mean "defer to the level above", not "zero minutes".
+        store
+            .set_calendar_notify_lead("work@example.com", "team", None)
+            .unwrap();
+        assert_eq!(
+            store
+                .calendar("work@example.com", "team")
+                .unwrap()
+                .unwrap()
+                .notify_lead_minutes,
+            None
+        );
+    }
+
+    #[test]
+    fn a_sync_never_overwrites_a_reminder_lead() {
+        // The new columns are the user's, so they inherit §4's protection.
+        let store = two_accounts();
+        store
+            .set_calendar_notify_lead("work@example.com", "team", Some(45))
+            .unwrap();
+        store
+            .upsert_calendar(&metadata("work@example.com", "team", "Team (renamed)"))
+            .unwrap();
+        assert_eq!(
+            store
+                .calendar("work@example.com", "team")
+                .unwrap()
+                .unwrap()
+                .notify_lead_minutes,
+            Some(45)
+        );
     }
 
     #[test]

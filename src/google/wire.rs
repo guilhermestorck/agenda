@@ -102,6 +102,43 @@ pub struct WireEvent {
     #[serde(rename = "iCalUID")]
     pub ical_uid: Option<String>,
     pub updated: Option<String>,
+    pub reminders: Option<WireReminders>,
+}
+
+/// Google's reminder settings for one event.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireReminders {
+    /// True when the event simply inherits its calendar's default, which is where our own
+    /// cascade takes over.
+    #[serde(default)]
+    pub use_default: bool,
+    #[serde(default)]
+    pub overrides: Vec<WireReminder>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WireReminder {
+    /// "popup" or "email". Only the former has an analogue here.
+    pub method: String,
+    pub minutes: i64,
+}
+
+impl WireReminders {
+    /// The event's own reminder, in minutes before it starts.
+    ///
+    /// The earliest popup override, because a user who asked to be told twice wants the
+    /// first of those. Email reminders are Google's to send, not ours to duplicate.
+    fn popup_minutes(&self) -> Option<i64> {
+        if self.use_default {
+            return None;
+        }
+        self.overrides
+            .iter()
+            .filter(|reminder| reminder.method == "popup")
+            .map(|reminder| reminder.minutes)
+            .max()
+    }
 }
 
 /// Google sends `date` for all-day events and `dateTime` for timed ones, never both.
@@ -202,6 +239,7 @@ pub fn map_event(
             recurring_event_id: Some(master.clone()),
             original_start_utc: Some(original_start_utc),
             status: "cancelled".to_string(),
+            reminder_minutes: None,
             updated_at: None,
         })));
     }
@@ -250,6 +288,10 @@ pub fn map_event(
             .status
             .clone()
             .unwrap_or_else(|| "confirmed".to_string()),
+        reminder_minutes: wire
+            .reminders
+            .as_ref()
+            .and_then(WireReminders::popup_minutes),
         updated_at: wire
             .updated
             .as_deref()

@@ -382,6 +382,7 @@ mod tests {
                 recurring_event_id: None,
                 original_start_utc: None,
                 status: "confirmed".to_string(),
+                reminder_minutes: None,
                 updated_at: None,
             };
             locked.upsert_event(&event).unwrap();
@@ -453,6 +454,7 @@ mod tests {
                     recurring_event_id: None,
                     original_start_utc: None,
                     status: "confirmed".to_string(),
+                    reminder_minutes: None,
                     updated_at: None,
                 })
                 .unwrap();
@@ -670,6 +672,7 @@ mod incremental_tests {
                 recurring_event_id: None,
                 original_start_utc: None,
                 status: "confirmed".to_string(),
+                reminder_minutes: None,
                 updated_at: None,
             })
             .unwrap();
@@ -841,6 +844,7 @@ mod incremental_tests {
                 recurring_event_id: None,
                 original_start_utc: None,
                 status: "confirmed".to_string(),
+                reminder_minutes: None,
                 updated_at: None,
             })
             .unwrap();

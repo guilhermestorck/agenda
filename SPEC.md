@@ -452,9 +452,13 @@ implying coverage that does not exist.
 - **GitHub username.** A rename would break `guilhermestorck.github.io`, which is the
   intended host for the privacy policy and terms that Google's consent screen requires, and
   which would also be registered as an authorized domain. Resolve before publishing.
-- **Notification lead time** is "configurable" — the default, and whether it is global,
-  per-account, or per-calendar, is unspecified. Multi-account makes per-account plausible
-  (work reminders earlier than personal ones). Decide at `notify`.
+- ~~**Notification lead time**~~ — **decided 2026-09-12.** It cascades, most specific
+  winning: the event's own reminder (read from Google, since v1 is read-only and the user
+  sets it where they create the event) → the calendar's → the account's → a global default
+  of 10 minutes in `~/.config/agenda/settings.toml`. All-day events are notified too, with
+  the lead read as whole days and anchored to a configurable hour, default 09:00 — an
+  all-day event starts at local midnight, so counting back from it literally would put every
+  reminder in the middle of the night.
 - **The form of the account marker.** §1 fixes that there *is* a secondary cue and that it
   carries the account; whether it is a leading stripe, a dot, a border treatment, or
   something else is a `views` decision. It must survive the criterion-4 test: legible when

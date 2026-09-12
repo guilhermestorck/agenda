@@ -114,6 +114,7 @@ mod tests {
             sort_order: 0,
             display_name: None,
             picture_url: None,
+            notify_lead_minutes: None,
         }
     }
 
@@ -128,6 +129,7 @@ mod tests {
             is_primary: false,
             visible: true,
             user_color: user.map(str::to_string),
+            notify_lead_minutes: None,
             sync_token: None,
             synced_at: None,
         }

@@ -54,6 +54,11 @@ impl Paths {
         self.config_dir.join("oauth.toml")
     }
 
+    /// The user's preferences, written by hand or by the app.
+    pub fn settings(&self) -> PathBuf {
+        self.config_dir.join("settings.toml")
+    }
+
     /// Where an account's profile picture is kept once downloaded.
     ///
     /// In the cache rather than the data directory: it is Google's copy of something Google
@@ -88,28 +93,15 @@ impl Credentials {
     /// which is not in the approved dependency set (SPEC §9). Upgrade to `toml` if this
     /// file ever grows past a flat pair of strings.
     pub fn parse(text: &str) -> Result<Self> {
-        let mut client_id = None;
-        let mut client_secret = None;
-
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let Some((key, value)) = line.split_once('=') else {
-                bail!("expected `key = \"value\"` lines, found: {line}");
-            };
-            match key.trim() {
-                "client_id" => client_id = Some(unquote(value.trim())?),
-                "client_secret" => client_secret = Some(unquote(value.trim())?),
-                // Unknown keys are left alone: the file is the user's, and a future setting
-                // they have added by hand is not a reason to refuse to start.
-                _ => {}
-            }
-        }
-
-        let client_id = client_id.context("client_id is missing")?;
-        let client_secret = client_secret.context("client_secret is missing")?;
+        let pairs = parse_pairs(text)?;
+        let client_id = pairs
+            .get("client_id")
+            .cloned()
+            .context("client_id is missing")?;
+        let client_secret = pairs
+            .get("client_secret")
+            .cloned()
+            .context("client_secret is missing")?;
         if client_id.is_empty() || client_secret.is_empty() {
             bail!("client_id and client_secret must both be non-empty");
         }
@@ -139,6 +131,37 @@ fn filename_for(email: &str) -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect()
+}
+
+/// Read a flat `key = value` file.
+///
+/// Unknown keys are kept rather than rejected: the file is the user's, and a setting they
+/// added by hand is not a reason to refuse to start. Quoted values are unquoted; bare ones
+/// (numbers, mostly) are taken as they stand.
+pub fn parse_pairs(text: &str) -> Result<std::collections::HashMap<String, String>> {
+    let mut pairs = std::collections::HashMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            bail!("expected `key = value` lines, found: {line}");
+        };
+        let value = value.trim();
+        let value = if value.starts_with('"') || value.starts_with('\'') {
+            unquote(value)?
+        } else {
+            // Strip a trailing comment from a bare value, which a quoted one gets for free.
+            value
+                .split_once('#')
+                .map_or(value, |(before, _)| before)
+                .trim()
+                .to_string()
+        };
+        pairs.insert(key.trim().to_string(), value);
+    }
+    Ok(pairs)
 }
 
 /// The XDG base directory spec requires a value that is not an absolute path to be treated
