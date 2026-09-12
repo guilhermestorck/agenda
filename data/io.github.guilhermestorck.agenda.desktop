@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=agenda
+GenericName=Calendar
+Comment=Several Google accounts in one week
+Exec=agenda
+Icon=io.github.guilhermestorck.agenda
+Terminal=false
+Categories=Office;Calendar;GTK;
+Keywords=calendar;google;week;schedule;
+StartupNotify=true
+StartupWMClass=agenda

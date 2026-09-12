@@ -32,9 +32,19 @@ Writing back, local calendars, ICS import/export, month and day views and search
 CalDAV or Exchange backends, mobile or web clients, multi-user installs, a plugin system, or
 any hosted service. Nothing here talks to any server except Google's own API.
 
-## Building
+## Installing
 
 Requires a Rust toolchain, GTK 4 and libadwaita.
+
+```
+./scripts/install.sh
+```
+
+That builds in release mode and installs the binary, desktop entry and icon under
+`~/.local` — no root, nothing outside your home directory. Set `PREFIX` to install
+elsewhere. Autostart is opt-in; the script prints the one command that enables it.
+
+To build without installing:
 
 ```
 cargo build --release
