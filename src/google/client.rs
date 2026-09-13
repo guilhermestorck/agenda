@@ -118,6 +118,20 @@ impl Session {
                 continue;
             }
 
+            // Google's own words for this are a page of JSON ending in
+            // ACCESS_TOKEN_SCOPE_INSUFFICIENT, which tells a user nothing about what to do.
+            // The cause is always the same: the grant does not carry the scope we asked
+            // for, and no amount of retrying changes that.
+            if status == reqwest::StatusCode::FORBIDDEN
+                && body.contains("ACCESS_TOKEN_SCOPE_INSUFFICIENT")
+            {
+                bail!(
+                    "Google granted access without calendar permission. \
+                     Check that the consent screen still lists the Calendar scope, and that \
+                     every permission box was ticked when approving."
+                );
+            }
+
             bail!(
                 "{} returned {status} for {}: {body}",
                 self.api_base,
@@ -424,6 +438,36 @@ mod tests {
             "exactly one retry"
         );
         assert!(error.to_string().contains("401"));
+    }
+
+    #[tokio::test]
+    async fn a_missing_scope_says_what_to_do_rather_than_quoting_google() {
+        // The real payload that cost a failed connect on 2026-09-13.
+        let fake = serve(vec![(
+            403,
+            r#"{"error":{"code":403,"message":"Request had insufficient authentication scopes.","status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]}}"#
+                .to_string(),
+        )]);
+        let error = session(&fake).calendars().await.unwrap_err().to_string();
+
+        assert!(error.contains("calendar permission"), "got: {error}");
+        assert!(error.contains("consent screen"), "got: {error}");
+        assert!(
+            !error.contains("ACCESS_TOKEN_SCOPE_INSUFFICIENT"),
+            "the raw reason code helps nobody: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn another_403_is_still_reported_in_full() {
+        // Only the scope case gets a rewritten message; anything else keeps Google's text,
+        // which is the only clue there is.
+        let fake = serve(vec![(
+            403,
+            r#"{"error":{"code":403,"message":"Rate Limit Exceeded"}}"#.to_string(),
+        )]);
+        let error = session(&fake).calendars().await.unwrap_err().to_string();
+        assert!(error.contains("Rate Limit Exceeded"), "got: {error}");
     }
 
     #[tokio::test]

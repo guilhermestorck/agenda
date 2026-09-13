@@ -15,7 +15,7 @@ holds: nothing here creates, edits or moves an event.
 | `views-timegrid` | One parameterised time grid: day (N=1), week (N=7), multi-day (N=3/5). Refactors the existing week view rather than adding views beside it. Owns the view switcher. | — |
 | `views-month` | Month grid — whole weeks, compact chips, no hour axis. A different layout problem. | `views-timegrid` (switcher, shared queries) |
 | `views-agenda` | Chronological list of upcoming events. The cheapest view to build and often the most used. | `views-timegrid` (switcher) |
-| `shell` | Collapsible sidebar with its three states, its visual design, and Connect account relocated into it. | — |
+| `shell` | Collapsible sidebar with its three states, its visual design, and the account actions relocated into it — Connect account, made discreet, alongside a manual "sync now" control. | — |
 | `timezones` | A display-zone override, and an optional secondary zone shown alongside. | `views-timegrid` |
 | `lead-in` | A translucent band from a reminder's fire time to its event's start, so the user can see when they will be told. | `views-timegrid`, `notify` |
 

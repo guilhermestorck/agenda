@@ -46,6 +46,12 @@ struct Ui {
     needs_reconnect: RefCell<HashSet<String>>,
     /// `None` when no StatusNotifierItem host answered. The window works regardless.
     tray: RefCell<Option<ksni::blocking::Handle<tray::Item>>>,
+    sync_button: gtk::Button,
+    /// The timer for the next scheduled pass. Held so a manual sync can cancel it: starting
+    /// a second pass without cancelling would leave two self-re-arming chains running for
+    /// the life of the process, each doubling on every tick.
+    pending_sync: RefCell<Option<glib::SourceId>>,
+    syncing: Cell<bool>,
     settings: notify::Settings,
     /// The instant reminders were last checked up to. Everything due after it and at or
     /// before now is delivered, which is what makes a suspend across a reminder harmless.
@@ -110,6 +116,9 @@ fn startup() -> anyhow::Result<gtk::Widget> {
         sidebar: gtk::Box::new(Orientation::Vertical, 0),
         toasts: adw::ToastOverlay::new(),
         connect_button: gtk::Button::with_label("Connect account"),
+        sync_button: gtk::Button::from_icon_name("view-refresh-symbolic"),
+        pending_sync: RefCell::new(None),
+        syncing: Cell::new(false),
         week: week::Week::new(),
         needs_reconnect: RefCell::new(HashSet::new()),
         tray: RefCell::new(None),
@@ -144,6 +153,12 @@ fn build_content(ui: &Rc<Ui>) -> gtk::Widget {
     let clicked = ui.clone();
     ui.connect_button
         .connect_clicked(move |_| start_connect(&clicked));
+
+    ui.sync_button.add_css_class("flat");
+    ui.sync_button.set_tooltip_text(Some("Sync now"));
+    let clicked = ui.clone();
+    ui.sync_button.connect_clicked(move |_| sync_now(&clicked));
+    header.pack_start(&ui.sync_button);
 
     let navigation = gtk::Box::new(Orientation::Horizontal, 0);
     navigation.add_css_class("linked");
@@ -214,6 +229,9 @@ fn start_connect(ui: &Rc<Ui>) {
                     ui.needs_reconnect.borrow_mut().remove(&email);
                     refresh_sidebar(&ui);
                     refresh_week(&ui);
+                    // Its calendars are on screen; its events are not until something
+                    // fetches them, and waiting for the timer means an empty week.
+                    sync_now(&ui);
                 }
                 Ok(Connected::Declined) => {
                     ui.toasts
@@ -734,7 +752,24 @@ fn refresh_tray(ui: &Rc<Ui>) {
 ///
 /// Re-armed after each pass rather than on a fixed timer, so the interval can follow what
 /// the last pass found: a minute while things are moving, five when they are not.
+/// Sync immediately, cancelling whatever pass was scheduled.
+///
+/// Used by the refresh button and after a connect. Without this, a freshly connected account
+/// shows its calendars but an empty week until the next tick — which, once the interval has
+/// backed off, is up to five minutes of looking at nothing.
+fn sync_now(ui: &Rc<Ui>) {
+    if ui.syncing.get() {
+        return;
+    }
+    if let Some(pending) = ui.pending_sync.borrow_mut().take() {
+        pending.remove();
+    }
+    start_syncing(ui, scheduler::MIN_INTERVAL);
+}
+
 fn start_syncing(ui: &Rc<Ui>, interval: std::time::Duration) {
+    ui.syncing.set(true);
+    ui.sync_button.set_sensitive(false);
     let store = ui.store.clone();
     let credentials = ui.credentials.clone();
     let ui = ui.clone();
@@ -742,6 +777,8 @@ fn start_syncing(ui: &Rc<Ui>, interval: std::time::Duration) {
     runtime::spawn(
         async move { scheduler::sync_all(store, credentials).await },
         move |pass| {
+            ui.syncing.set(false);
+            ui.sync_button.set_sensitive(true);
             let previously = ui.needs_reconnect.borrow().clone();
             let now: HashSet<String> = pass.needs_reconnect.iter().cloned().collect();
             *ui.needs_reconnect.borrow_mut() = now.clone();
@@ -768,7 +805,11 @@ fn start_syncing(ui: &Rc<Ui>, interval: std::time::Duration) {
                 "sync pass complete"
             );
             let again = ui.clone();
-            glib::timeout_add_local_once(next, move || start_syncing(&again, next));
+            let pending = glib::timeout_add_local_once(next, move || {
+                again.pending_sync.borrow_mut().take();
+                start_syncing(&again, next);
+            });
+            *ui.pending_sync.borrow_mut() = Some(pending);
         },
     );
 }
