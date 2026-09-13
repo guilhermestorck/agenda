@@ -428,6 +428,13 @@ implying coverage that does not exist.
 - **Database schema.** The schema in §4 needs sign-off before it is written, and any change
   to it afterwards needs sign-off again. Once real synced calendars exist, a bad migration
   costs a full resync at best.
+- **Any `secret-tool` command, or anything else that reads the Secret Service.** Including
+  the read-only ones. Added 2026-09-13 after `secret-tool search --all application agenda`
+  printed four accounts' access and refresh tokens into a session transcript, which cost a
+  revoke-and-reconnect of every account. The application's own redaction held throughout —
+  `Tokens` and `Credentials` have hand-written `Debug` impls — and was simply walked around
+  by a shell command. Nothing needing verification requires the keyring: account presence,
+  calendar counts and sync state all come from SQLite, which holds no credentials.
 
 ### Never
 
@@ -436,6 +443,9 @@ implying coverage that does not exist.
   likely accidents (`client_secret*.json` is the filename Google Cloud Console hands you).
 - Create Google Cloud credentials or attempt to authenticate on the user's behalf.
 - Weaken, skip, or delete a test to reach green.
+- Print, echo, or otherwise emit credential material — tokens, client secrets, passwords —
+  by any means, whatever tool produces it. Redaction inside the application is not a
+  substitute for not asking for the value in the first place.
 - Claim something was verified end-to-end when it was only verified against fixtures.
 
 ### Always
