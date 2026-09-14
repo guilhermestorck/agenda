@@ -42,6 +42,7 @@ pub fn segments(
     let end = end.with_timezone(&zone);
 
     let mut out = Vec::new();
+
     for day in 0..days {
         let date = week_start + Duration::days(day as i64);
         let Some(midnight) = zone
@@ -146,6 +147,34 @@ mod tests {
             .earliest()
             .unwrap()
             .timestamp()
+    }
+
+    /// SPEC-views-timegrid criterion 4: the same event must land at the same clock position
+    /// whether the grid shows one day or seven. Placement follows the date, never the column
+    /// count — a regression here would move every event when the user switches span.
+    #[test]
+    fn an_event_lands_identically_whatever_the_span() {
+        let start = at("2026-09-16 09:30:00");
+        let end = at("2026-09-16 11:00:00");
+
+        let mut seen = Vec::new();
+        for days in [3usize, 5, 7] {
+            let found = segments(start, end, week(), MADRID, days);
+            assert_eq!(found.len(), 1, "days={days}");
+            seen.push((found[0].top_minutes, found[0].height_minutes, found[0].day));
+        }
+        assert!(
+            seen.windows(2).all(|pair| pair[0] == pair[1]),
+            "placement drifted with the column count: {seen:?}"
+        );
+
+        // A span of one anchored on that day puts it in column zero at the same height.
+        let focused = NaiveDate::from_ymd_opt(2026, 9, 16).unwrap();
+        let day_span = segments(start, end, focused, MADRID, 1);
+        assert_eq!(day_span.len(), 1);
+        assert_eq!(day_span[0].day, 0);
+        assert_eq!(day_span[0].top_minutes, seen[0].0);
+        assert_eq!(day_span[0].height_minutes, seen[0].1);
     }
 
     fn week() -> NaiveDate {

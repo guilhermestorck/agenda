@@ -16,13 +16,16 @@ use gtk::{Align, Orientation};
 use crate::accounts::style::{Colors, text_on};
 
 use super::layout::{columns, segments};
+use super::span::Span;
 
 /// Pixels per hour. The whole day is drawn and scrolled rather than collapsed to working
 /// hours, because "working hours" is a preference nobody has expressed yet.
 pub const HOUR_HEIGHT: f64 = 48.0;
 /// Width of the hour axis down the left.
 pub const AXIS_WIDTH: i32 = 56;
-pub const DAYS: usize = 7;
+/// Columns at the widest span. Labels are built once at this count and hidden when the
+/// span is narrower, rather than rebuilt on every switch.
+const MAX_DAYS: usize = 7;
 /// The hour the grid is scrolled to on open.
 const FIRST_VISIBLE_HOUR: f64 = 7.0;
 
@@ -51,28 +54,25 @@ pub struct Week {
     pub canvas: gtk::Fixed,
     pub all_day_row: gtk::Box,
     grid: gtk::DrawingArea,
-    /// The Monday the displayed week starts on.
-    start: Rc<Cell<NaiveDate>>,
+    /// The day the user is looking at. The first column is derived from it and the span,
+    /// because spans 1 and 3 anchor here while 5 and 7 anchor on this day's Monday.
+    focus: Rc<Cell<NaiveDate>>,
+    span: Rc<Cell<Span>>,
     items: RefCell<Vec<Item>>,
     /// The zone the grid is drawn in: the user's own, not any calendar's.
     zone: Tz,
     palette: gtk::CssProvider,
 }
 
-/// The Monday on or before `date`. Weeks start on Monday here; Sunday-first is a preference
-/// nobody has asked for, and guessing it from the locale would be a guess.
-fn monday_of(date: NaiveDate) -> NaiveDate {
-    date - Duration::days(date.weekday().num_days_from_monday() as i64)
-}
-
 impl Week {
     pub fn new() -> Rc<Self> {
-        let start = Rc::new(Cell::new(monday_of(Local::now().date_naive())));
+        let focus = Rc::new(Cell::new(Local::now().date_naive()));
+        let span = Rc::new(Cell::new(Span::default()));
 
         let title = gtk::Label::new(None);
         title.add_css_class("heading");
 
-        let headers: Vec<gtk::Label> = (0..DAYS)
+        let headers: Vec<gtk::Label> = (0..MAX_DAYS)
             .map(|_| {
                 let label = gtk::Label::new(None);
                 label.set_hexpand(true);
@@ -166,7 +166,8 @@ impl Week {
             canvas,
             all_day_row,
             grid,
-            start,
+            focus,
+            span,
             items: RefCell::new(Vec::new()),
             zone: local_zone(),
             palette,
@@ -224,22 +225,23 @@ impl Week {
             self.all_day_row.remove(&child);
         }
 
-        let start = self.start.get();
+        let start = self.start();
         let width = f64::from(self.grid.width());
         if width <= 0.0 {
             return;
         }
-        let column_width = width / DAYS as f64;
+        let days = self.span.get().days();
+        let column_width = width / days as f64;
 
         let items = self.items.borrow();
 
         // All-day events go in their own band; they have no position on an hour axis.
-        for day in 0..DAYS {
+        for day in 0..days {
             let lane = gtk::Box::new(Orientation::Vertical, 2);
             lane.set_hexpand(true);
             lane.set_size_request((column_width as i32).max(1), -1);
             for item in items.iter().filter(|item| item.all_day) {
-                for segment in segments(item.start_utc, item.end_utc, start, self.zone, DAYS) {
+                for segment in segments(item.start_utc, item.end_utc, start, self.zone, days) {
                     if segment.day == day {
                         lane.append(&event_widget(item, 18, column_width as i32));
                     }
@@ -249,10 +251,10 @@ impl Week {
         }
 
         // Timed events, one day at a time so overlap is resolved within a column.
-        for day in 0..DAYS {
+        for day in 0..days {
             let mut placed: Vec<(&Item, super::layout::Segment)> = Vec::new();
             for item in items.iter().filter(|item| !item.all_day) {
-                for segment in segments(item.start_utc, item.end_utc, start, self.zone, DAYS) {
+                for segment in segments(item.start_utc, item.end_utc, start, self.zone, days) {
                     if segment.day == day {
                         placed.push((item, segment));
                     }
@@ -283,31 +285,54 @@ impl Week {
         &self.title
     }
 
-    /// The Monday of the displayed week.
+    /// The date of the first column, derived from the focused day and the span.
     pub fn start(&self) -> NaiveDate {
-        self.start.get()
+        self.span.get().start_for(self.focus.get())
+    }
+
+    pub fn span(&self) -> Span {
+        self.span.get()
+    }
+
+    /// Switch span, keeping the focused day on screen.
+    pub fn set_span(&self, span: Span) {
+        self.span.set(span);
+        for (index, label) in self.headers.iter().enumerate() {
+            label.set_visible(index < span.days());
+        }
+        self.refresh();
+    }
+
+    pub fn days(&self) -> usize {
+        self.span.get().days()
     }
 
     pub fn zone(&self) -> Tz {
         self.zone
     }
 
-    pub fn shift(&self, weeks: i64) {
-        self.start.set(self.start.get() + Duration::weeks(weeks));
+    /// Move by one press of previous/next. The distance is the span's, not the column
+    /// count's — a working week steps a whole week or the next press starts it on a Saturday.
+    pub fn shift(&self, presses: i64) {
+        let step = self.span.get().step();
+        self.focus
+            .set(self.focus.get() + Duration::days(presses * step));
         self.refresh();
     }
 
     pub fn go_to_today(&self) {
-        self.start.set(monday_of(Local::now().date_naive()));
+        self.focus.set(Local::now().date_naive());
         self.refresh();
     }
 
     fn install_grid_drawing(self: &Rc<Self>) {
-        let start = self.start.clone();
+        let focus = self.focus.clone();
+        let span = self.span.clone();
         self.grid
             .set_draw_func(move |area, context, width, height| {
                 let width = f64::from(width);
-                let column = width / DAYS as f64;
+                let days = span.get().days();
+                let column = width / days as f64;
 
                 // Taken from the widget's own foreground colour so the grid reads correctly in
                 // both the light and dark Adwaita themes rather than being hard-coded to one.
@@ -325,7 +350,7 @@ impl Week {
                     context.move_to(0.0, y);
                     context.line_to(width, y);
                 }
-                for day in 1..DAYS {
+                for day in 1..days {
                     let x = (day as f64 * column).floor() + 0.5;
                     context.move_to(x, 0.0);
                     context.line_to(x, f64::from(height));
@@ -334,8 +359,8 @@ impl Week {
 
                 // The current-time line, drawn only when today is on screen.
                 let today = Local::now().date_naive();
-                let offset = (today - start.get()).num_days();
-                if (0..DAYS as i64).contains(&offset) {
+                let offset = (today - span.get().start_for(focus.get())).num_days();
+                if (0..days as i64).contains(&offset) {
                     let now = Local::now();
                     let minutes = f64::from(now.hour() * 60 + now.minute());
                     let y = minutes / 60.0 * HOUR_HEIGHT;
@@ -350,10 +375,11 @@ impl Week {
 
     /// Redraw the labels and the grid for the current week.
     pub fn refresh(&self) {
-        let start = self.start.get();
+        let start = self.start();
         let today = Local::now().date_naive();
+        let days = self.span.get().days();
 
-        for (index, label) in self.headers.iter().enumerate() {
+        for (index, label) in self.headers.iter().take(days).enumerate() {
             let date = start + Duration::days(index as i64);
             label.set_markup(&format!(
                 "<b>{}</b>\n<span size=\"small\">{}</span>",
@@ -474,6 +500,7 @@ fn weekday_name(weekday: Weekday) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::span::monday_of;
 
     #[test]
     fn the_zone_name_is_read_out_of_the_localtime_symlink() {
@@ -527,7 +554,7 @@ mod tests {
         // care, and a 23-hour day must not turn into a six-day week.
         let start = monday_of(NaiveDate::from_ymd_opt(2026, 3, 29).unwrap());
         assert_eq!(start, NaiveDate::from_ymd_opt(2026, 3, 23).unwrap());
-        let days: Vec<NaiveDate> = (0..DAYS as i64)
+        let days: Vec<NaiveDate> = (0..Span::Week.days() as i64)
             .map(|d| start + Duration::days(d))
             .collect();
         assert_eq!(days.len(), 7);

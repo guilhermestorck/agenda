@@ -829,7 +829,7 @@ fn refresh_week(ui: &Rc<Ui>) {
         tracing::warn!(%start, "the displayed week has no valid start");
         return;
     };
-    let to = from + Duration::days(super::ui::week::DAYS as i64);
+    let to = from + Duration::days(ui.week.days() as i64);
 
     let items = match collect_items(ui, from.timestamp(), to.timestamp()) {
         Ok(items) => items,
