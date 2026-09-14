@@ -4,6 +4,7 @@
 //! the one action that reaches out, and it does so through `runtime::spawn` so the window
 //! stays responsive for however long the user spends at Google's consent screen.
 
+pub mod agenda;
 pub mod layout;
 pub mod span;
 pub mod vertical;
@@ -40,6 +41,10 @@ struct Ui {
     store: Arc<Mutex<Store>>,
     credentials: Credentials,
     sidebar: gtk::Box,
+    /// Account avatars only. Sixteen calendar dots is not a rail, it is a second list.
+    rail: gtk::Box,
+    /// Which of the two the sidebar is currently showing.
+    sidebar_stack: gtk::Stack,
     toasts: adw::ToastOverlay,
     connect_button: gtk::Button,
     week: Rc<week::Week>,
@@ -119,6 +124,8 @@ fn startup(window: &adw::ApplicationWindow) -> anyhow::Result<gtk::Widget> {
         store,
         credentials,
         sidebar: gtk::Box::new(Orientation::Vertical, 0),
+        rail: gtk::Box::new(Orientation::Vertical, 6),
+        sidebar_stack: gtk::Stack::new(),
         toasts: adw::ToastOverlay::new(),
         connect_button: gtk::Button::with_label("Connect account"),
         sync_button: gtk::Button::from_icon_name("view-refresh-symbolic"),
@@ -153,8 +160,9 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     let header = adw::HeaderBar::new();
 
     // Reachable at any time, not only on first run — SPEC §2.6.
-    ui.connect_button.add_css_class("suggested-action");
-    header.pack_start(&ui.connect_button);
+    // Flat, and in the sidebar footer. It was the loudest widget in the window, wearing
+    // suggested-action for something done four times ever.
+    ui.connect_button.add_css_class("flat");
 
     let clicked = ui.clone();
     ui.connect_button
@@ -164,7 +172,6 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     ui.sync_button.set_tooltip_text(Some("Sync now"));
     let clicked = ui.clone();
     ui.sync_button.connect_clicked(move |_| sync_now(&clicked));
-    header.pack_start(&ui.sync_button);
 
     let navigation = gtk::Box::new(Orientation::Horizontal, 0);
     navigation.add_css_class("linked");
@@ -236,38 +243,100 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
 
     // adw handles collapsing, the overlay and the swipe gesture. Hand-rolling any of that
     // over a gtk::Box was the previous arrangement and could not hide the sidebar at all.
+    let rail_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&ui.rail)
+        .build();
+    ui.rail.set_margin_top(6);
+    ui.rail.set_margin_bottom(6);
+    ui.rail.set_halign(Align::Center);
+
+    ui.sidebar_stack.add_named(&sidebar_scroll, Some("full"));
+    ui.sidebar_stack.add_named(&rail_scroll, Some("rail"));
+    ui.sidebar_stack.set_vexpand(true);
+
+    let kebab = gtk::MenuButton::new();
+    kebab.set_icon_name("view-more-symbolic");
+    kebab.add_css_class("flat");
+    kebab.set_tooltip_text(Some("Sidebar"));
+
+    let sidebar_top = gtk::Box::new(Orientation::Horizontal, 0);
+    sidebar_top.set_halign(Align::End);
+    sidebar_top.append(&kebab);
+
+    let sidebar_actions = gtk::Box::new(Orientation::Horizontal, 6);
+    sidebar_actions.set_margin_top(6);
+    sidebar_actions.set_margin_bottom(6);
+    sidebar_actions.set_margin_start(6);
+    sidebar_actions.set_margin_end(6);
+    ui.connect_button.set_hexpand(true);
+    sidebar_actions.append(&ui.connect_button);
+    sidebar_actions.append(&ui.sync_button);
+
+    let sidebar_root = gtk::Box::new(Orientation::Vertical, 0);
+    sidebar_root.append(&sidebar_top);
+    sidebar_root.append(&ui.sidebar_stack);
+    sidebar_root.append(&gtk::Separator::new(Orientation::Horizontal));
+    sidebar_root.append(&sidebar_actions);
+
     let split = adw::OverlaySplitView::builder()
-        .sidebar(&sidebar_scroll)
+        .sidebar(&sidebar_root)
         .content(ui.week.widget())
         .min_sidebar_width(280.0)
         .max_sidebar_width(320.0)
         .build();
 
-    let restored_open = saved.get("sidebar").map(String::as_str) != Some("hidden");
-    split.set_show_sidebar(restored_open);
+    // Three states do not fit one toggle button: its meaning would change on every press
+    // and there would be no way to skip a state. The menu names each one instead.
+    let popover = gtk::Popover::new();
+    let choices = gtk::Box::new(Orientation::Vertical, 0);
+    let apply = {
+        let split = split.clone();
+        let ui = ui.clone();
+        std::rc::Rc::new(move |state: SidebarState| {
+            match state {
+                SidebarState::Expanded => {
+                    split.set_show_sidebar(true);
+                    split.set_min_sidebar_width(280.0);
+                    split.set_max_sidebar_width(320.0);
+                    ui.sidebar_stack.set_visible_child_name("full");
+                }
+                SidebarState::Rail => {
+                    split.set_show_sidebar(true);
+                    split.set_min_sidebar_width(RAIL_WIDTH);
+                    split.set_max_sidebar_width(RAIL_WIDTH);
+                    ui.sidebar_stack.set_visible_child_name("rail");
+                }
+                SidebarState::Hidden => split.set_show_sidebar(false),
+            }
+            if let Err(error) =
+                crate::config::set_view_state(&ui.view_state, "sidebar", state.key())
+            {
+                tracing::warn!(error = %format!("{error:#}"), "could not remember the sidebar");
+            }
+        })
+    };
 
-    let toggle = gtk::ToggleButton::new();
-    toggle.set_icon_name("sidebar-show-symbolic");
-    toggle.set_tooltip_text(Some("Show accounts"));
-    toggle.set_active(restored_open);
-    split
-        .bind_property("show-sidebar", &toggle, "active")
-        .bidirectional()
-        .sync_create()
-        .build();
+    for state in SidebarState::ALL {
+        let button = gtk::Button::with_label(state.label());
+        button.add_css_class("flat");
+        let apply = apply.clone();
+        let popover = popover.clone();
+        button.connect_clicked(move |_| {
+            apply(state);
+            popover.popdown();
+        });
+        choices.append(&button);
+    }
+    popover.set_child(Some(&choices));
+    kebab.set_popover(Some(&popover));
 
-    let remember = ui.clone();
-    split.connect_show_sidebar_notify(move |split| {
-        let state = if split.shows_sidebar() {
-            "open"
-        } else {
-            "hidden"
-        };
-        if let Err(error) = crate::config::set_view_state(&remember.view_state, "sidebar", state) {
-            tracing::warn!(error = %format!("{error:#}"), "could not remember the sidebar");
-        }
-    });
-    header.pack_start(&toggle);
+    apply(
+        saved
+            .get("sidebar")
+            .and_then(|key| SidebarState::from_key(key))
+            .unwrap_or_default(),
+    );
 
     // A window too narrow for the sidebar collapses it to an overlay rather than crushing
     // the grid. The user's own choice still wins until the window is resized again.
@@ -334,6 +403,9 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
     while let Some(child) = ui.sidebar.first_child() {
         ui.sidebar.remove(&child);
     }
+    while let Some(child) = ui.rail.first_child() {
+        ui.rail.remove(&child);
+    }
 
     let groups = match read_groups(ui) {
         Ok(groups) => groups,
@@ -350,6 +422,32 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         empty.set_wrap(true);
         ui.sidebar.append(&empty);
         return;
+    }
+
+    for (account, _) in &groups {
+        // The rail carries avatars only — but an account Google has rejected must still be
+        // visible here. A collapsed sidebar hiding a broken account is exactly the failure
+        // SPEC §2.11 exists to prevent, and it is worse than a missing one.
+        let broken = ui.needs_reconnect.borrow().contains(&account.email);
+        let button = gtk::Button::new();
+        button.add_css_class("flat");
+        button.set_child(Some(&avatar_for(account, 32)));
+        button.set_tooltip_text(Some(&if broken {
+            format!("{} — needs reconnecting", account.email)
+        } else {
+            account.email.clone()
+        }));
+        if broken {
+            button.add_css_class("error");
+        }
+        let clicked = ui.clone();
+        let email = account.email.clone();
+        button.connect_clicked(move |_| {
+            if clicked.needs_reconnect.borrow().contains(&email) {
+                start_connect(&clicked);
+            }
+        });
+        ui.rail.append(&button);
     }
 
     for (account, calendars) in groups {
@@ -1103,4 +1201,67 @@ fn status(icon: &str, title: &str, description: &str) -> adw::StatusPage {
         .title(title)
         .description(description)
         .build()
+}
+
+/// How much of the sidebar is showing. Three states, named in a menu rather than cycled by
+/// a button whose meaning would change on every press.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+enum SidebarState {
+    #[default]
+    Expanded,
+    Rail,
+    Hidden,
+}
+
+/// Wide enough for an avatar and its reconnect dot, and nothing else.
+const RAIL_WIDTH: f64 = 56.0;
+
+impl SidebarState {
+    const ALL: [SidebarState; 3] = [
+        SidebarState::Expanded,
+        SidebarState::Rail,
+        SidebarState::Hidden,
+    ];
+
+    fn key(self) -> &'static str {
+        match self {
+            SidebarState::Expanded => "expanded",
+            SidebarState::Rail => "rail",
+            SidebarState::Hidden => "hidden",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            SidebarState::Expanded => "Show accounts and calendars",
+            SidebarState::Rail => "Accounts only",
+            SidebarState::Hidden => "Hide sidebar",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<SidebarState> {
+        SidebarState::ALL
+            .into_iter()
+            .find(|state| state.key() == key)
+    }
+}
+
+#[cfg(test)]
+mod sidebar_state_tests {
+    use super::*;
+
+    #[test]
+    fn states_round_trip_through_the_state_file() {
+        for state in SidebarState::ALL {
+            assert_eq!(SidebarState::from_key(state.key()), Some(state));
+        }
+    }
+
+    #[test]
+    fn an_unknown_state_falls_back_to_expanded() {
+        // A hand-edited or future value must not leave the user with no sidebar and no
+        // obvious way to get it back.
+        assert_eq!(SidebarState::from_key("icons"), None);
+        assert_eq!(SidebarState::default(), SidebarState::Expanded);
+    }
 }
