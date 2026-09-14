@@ -6,7 +6,9 @@ module specs follow.
 **Both `views-month` and `views-agenda` ship before the next manual test.** Their order
 relative to each other is an implementation detail, not a scoping decision.
 
-A seventh module, `tray-day`, was specified by the user on 2026-09-14.
+All seven module specs are written as of 2026-09-14: `SPEC-views-timegrid.md`,
+`SPEC-views-month.md`, `SPEC-views-agenda.md`, `SPEC-shell.md`, `SPEC-timezones.md`,
+`SPEC-lead-in.md`, `SPEC-tray-day.md`.
 
 This is **v2 work**. `SPEC.md` §2 currently lists "month and day views, search,
 drag-to-create/move/resize (M9)" under *Explicitly deferred past v1*; approving this map
