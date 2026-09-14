@@ -50,6 +50,10 @@ struct Ui {
     toasts: adw::ToastOverlay,
     connect_button: gtk::Button,
     week: Rc<week::Week>,
+    agenda: Rc<agenda::List>,
+    /// Swaps between the time grid and the list views. Only one is ever populated.
+    views: gtk::Stack,
+    view: Cell<View>,
     /// Accounts Google has permanently rejected. Held in memory, not the store: it is a fact
     /// about right now, and a restart should find out for itself rather than trust a flag.
     needs_reconnect: RefCell<HashSet<String>>,
@@ -134,6 +138,9 @@ fn startup(window: &adw::ApplicationWindow) -> anyhow::Result<gtk::Widget> {
         pending_sync: RefCell::new(None),
         syncing: Cell::new(false),
         week: week::Week::new(),
+        agenda: agenda::List::new(),
+        views: gtk::Stack::new(),
+        view: Cell::new(View::Grid),
         needs_reconnect: RefCell::new(HashSet::new()),
         tray: RefCell::new(None),
         settings: notify::Settings::load(&paths.settings()),
@@ -202,6 +209,14 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
         .get("span")
         .and_then(|key| span::Span::from_key(key))
         .unwrap_or_default();
+    let mut switcher_start = span::Span::ALL
+        .iter()
+        .position(|candidate| *candidate == span)
+        .unwrap_or(0);
+    if saved.get("span").map(String::as_str) == Some("agenda") {
+        ui.view.set(View::Agenda);
+        switcher_start = span::Span::ALL.len();
+    }
     ui.week.set_span(span);
     ui.week
         .set_display_zone(week::display_zone(ui.settings.timezone.as_deref()));
@@ -210,20 +225,26 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
         end: ui.settings.core_hours_end,
     });
 
-    let labels: Vec<&str> = span::Span::ALL.iter().map(|span| span.label()).collect();
+    let mut labels: Vec<&str> = span::Span::ALL.iter().map(|span| span.label()).collect();
+    labels.push("Agenda");
     let switcher = gtk::DropDown::from_strings(&labels);
-    switcher.set_selected(
-        span::Span::ALL
-            .iter()
-            .position(|candidate| *candidate == span)
-            .unwrap_or(0) as u32,
-    );
+    switcher.set_selected(switcher_start as u32);
     switcher.set_tooltip_text(Some("How many days to show"));
     let clone = ui.clone();
     switcher.connect_selected_notify(move |switcher| {
-        let Some(span) = span::Span::ALL.get(switcher.selected() as usize).copied() else {
+        let chosen = switcher.selected() as usize;
+        let Some(span) = span::Span::ALL.get(chosen).copied() else {
+            // Past the spans is the agenda list, which has no span of its own.
+            clone.view.set(View::Agenda);
+            clone.views.set_visible_child_name("agenda");
+            refresh_week(&clone);
+            if let Err(error) = crate::config::set_view_state(&clone.view_state, "span", "agenda") {
+                tracing::warn!(error = %format!("{error:#}"), "could not remember the view");
+            }
             return;
         };
+        clone.view.set(View::Grid);
+        clone.views.set_visible_child_name("grid");
         clone.week.set_span(span);
         refresh_week(&clone);
         if let Err(error) = crate::config::set_view_state(&clone.view_state, "span", span.key()) {
@@ -283,9 +304,18 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     sidebar_root.append(&gtk::Separator::new(Orientation::Horizontal));
     sidebar_root.append(&sidebar_actions);
 
+    ui.views.add_named(ui.week.widget(), Some("grid"));
+    ui.views.add_named(ui.agenda.widget(), Some("agenda"));
+    // After the children exist, not before: naming a child of an empty stack does nothing,
+    // and the first child added then wins.
+    ui.views.set_visible_child_name(match ui.view.get() {
+        View::Grid => "grid",
+        View::Agenda => "agenda",
+    });
+
     let split = adw::OverlaySplitView::builder()
         .sidebar(&sidebar_root)
-        .content(ui.week.widget())
+        .content(&ui.views)
         .min_sidebar_width(280.0)
         .max_sidebar_width(320.0)
         .build();
@@ -1013,6 +1043,21 @@ fn refresh_week(ui: &Rc<Ui>) {
     };
     let to = from + Duration::days(ui.week.days() as i64);
 
+    // The agenda looks a month ahead from the start of today rather than at the grid's
+    // span: a list of "what is next" that stops on Sunday is not what is next.
+    let (from, to) = if ui.view.get() == View::Agenda {
+        let today = chrono::Local::now().date_naive();
+        match zone
+            .from_local_datetime(&today.and_hms_opt(0, 0, 0).expect("midnight exists"))
+            .earliest()
+        {
+            Some(midnight) => (midnight, midnight + Duration::days(30)),
+            None => (from, to),
+        }
+    } else {
+        (from, to)
+    };
+
     let items = match collect_items(ui, from.timestamp(), to.timestamp()) {
         Ok(items) => items,
         Err(error) => {
@@ -1020,8 +1065,28 @@ fn refresh_week(ui: &Rc<Ui>) {
             Vec::new()
         }
     };
-    tracing::debug!(week = %start, events = items.len(), "redrew the week");
-    ui.week.set_items(items);
+    match ui.view.get() {
+        View::Grid => {
+            tracing::debug!(week = %start, events = items.len(), "redrew the week");
+            ui.week.set_items(items);
+        }
+        View::Agenda => {
+            tracing::debug!(events = items.len(), "redrew the agenda");
+            // The grid's date range is not this view's range, and leaving it up claims the
+            // list stops on Sunday when it runs a month.
+            ui.week.title().set_text(&format!(
+                "{} – {}",
+                from.format("%-d %b"),
+                to.format("%-d %b %Y")
+            ));
+            let secondary = ui
+                .settings
+                .secondary_timezone
+                .as_deref()
+                .and_then(|name| name.parse().ok());
+            ui.agenda.set_items(&items, zone, secondary);
+        }
+    }
 }
 
 fn collect_items(ui: &Rc<Ui>, from: i64, to: i64) -> anyhow::Result<Vec<week::Item>> {
@@ -1280,4 +1345,11 @@ mod sidebar_state_tests {
         assert_eq!(SidebarState::from_key("icons"), None);
         assert_eq!(SidebarState::default(), SidebarState::Expanded);
     }
+}
+
+/// Which view is on screen. The spans all share the time grid; the list views do not.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum View {
+    Grid,
+    Agenda,
 }

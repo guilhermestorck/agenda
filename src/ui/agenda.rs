@@ -7,6 +7,9 @@
 use chrono::{DateTime, NaiveDate, TimeZone};
 use chrono_tz::Tz;
 
+use adw::prelude::*;
+use gtk::gdk;
+
 use super::week::Item;
 
 /// One day's events, in the order they should be read.
@@ -50,6 +53,134 @@ pub fn group(items: &[Item], zone: Tz) -> Vec<DayGroup> {
             DayGroup { date, items }
         })
         .collect()
+}
+
+/// The scrolling list itself.
+pub struct List {
+    root: gtk::ScrolledWindow,
+    body: gtk::Box,
+    empty: gtk::Label,
+}
+
+impl List {
+    pub fn new() -> std::rc::Rc<Self> {
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        body.set_margin_top(12);
+        body.set_margin_bottom(12);
+        body.set_margin_start(12);
+        body.set_margin_end(12);
+
+        let empty = gtk::Label::new(Some("Nothing coming up."));
+        empty.add_css_class("dim-label");
+        empty.set_margin_top(48);
+
+        let root = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .hexpand(true)
+            .vexpand(true)
+            .child(&body)
+            .build();
+
+        std::rc::Rc::new(Self { root, body, empty })
+    }
+
+    pub fn widget(&self) -> &gtk::ScrolledWindow {
+        &self.root
+    }
+
+    pub fn set_items(&self, items: &[Item], zone: Tz, secondary: Option<Tz>) {
+        while let Some(child) = self.body.first_child() {
+            self.body.remove(&child);
+        }
+
+        let groups = group(items, zone);
+        if groups.is_empty() {
+            // An empty panel reads as a failure to load; saying so reads as an answer.
+            self.body.append(&self.empty);
+            return;
+        }
+
+        let today = chrono::Utc::now().with_timezone(&zone).date_naive();
+        for day in groups {
+            let heading = gtk::Label::new(None);
+            heading.set_xalign(0.0);
+            heading.set_margin_top(12);
+            heading.add_css_class("heading");
+            let label = if day.date == today {
+                format!("Today — {}", day.date.format("%A %-d %B"))
+            } else {
+                day.date.format("%A %-d %B").to_string()
+            };
+            heading.set_text(&label);
+            if day.date == today {
+                heading.add_css_class("accent");
+            }
+            self.body.append(&heading);
+
+            for item in &day.items {
+                self.body.append(&row(item, zone, secondary));
+            }
+        }
+    }
+}
+
+/// One event: when, what, whose.
+fn row(item: &Item, zone: Tz, secondary: Option<Tz>) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    row.set_margin_top(4);
+    row.set_margin_bottom(4);
+
+    let when = gtk::Label::new(None);
+    when.set_xalign(0.0);
+    when.set_width_chars(if secondary.is_some() { 20 } else { 11 });
+    when.add_css_class("dim-label");
+    when.set_text(&when_text(item, zone, secondary));
+    row.append(&when);
+
+    // The same two cues the grid uses, so the views cannot disagree about whose event it is.
+    let swatch = gtk::DrawingArea::new();
+    swatch.set_size_request(4, -1);
+    let fill = item.colors.fill.clone();
+    swatch.set_draw_func(move |_, context, width, height| {
+        if let Ok(rgba) = gdk::RGBA::parse(&fill) {
+            context.set_source_rgb(
+                f64::from(rgba.red()),
+                f64::from(rgba.green()),
+                f64::from(rgba.blue()),
+            );
+            context.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
+            let _ = context.fill();
+        }
+    });
+    row.append(&swatch);
+
+    let summary = gtk::Label::new(Some(&item.summary));
+    summary.set_xalign(0.0);
+    summary.set_hexpand(true);
+    summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    summary.set_tooltip_text(Some(&format!("{} — {}", item.summary, item.account)));
+    row.append(&summary);
+
+    row
+}
+
+/// The time column's text. All-day events say so rather than claiming a time they lack.
+fn when_text(item: &Item, zone: Tz, secondary: Option<Tz>) -> String {
+    use chrono::TimeZone;
+    if item.all_day {
+        return "All day".to_string();
+    }
+    let Some(instant) = zone.timestamp_opt(item.start_utc, 0).single() else {
+        return String::new();
+    };
+    let primary = instant.format("%H:%M").to_string();
+    match secondary {
+        Some(other) => format!(
+            "{primary} ({})",
+            instant.with_timezone(&other).format("%H:%M")
+        ),
+        None => primary,
+    }
 }
 
 #[cfg(test)]

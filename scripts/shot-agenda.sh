@@ -32,10 +32,14 @@ if [ -z "$active" ]; then
   echo "REFUSED: could not determine the focused window" >&2
   exit 2
 fi
-if [ "$active" != "agenda" ]; then
-  echo "REFUSED: focused window is '$active', not agenda" >&2
-  exit 3
-fi
+# The installed app id, and the bare name a cargo-run build reports.
+case "$active" in
+  io.github.guilhermestorck.agenda|agenda) ;;
+  *)
+    echo "REFUSED: focused window is '$active', not agenda" >&2
+    exit 3
+    ;;
+esac
 
 spectacle -a -b -n -o "$out" >/dev/null 2>&1
 sleep 1.5
