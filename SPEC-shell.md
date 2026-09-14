@@ -45,12 +45,13 @@ where it is.
 **Never** — move the view switcher or navigation out of the header; hide Reconnect behind a
 state the user has to discover.
 
-## Open questions
+## Resolved
 
-1. **How does the user cycle three states?** A single toggle button is ambiguous with three.
-   Options: one button cycling expanded → rail → hidden; or a button toggling hidden/shown
-   with the breakpoint choosing rail; or expanded/hidden by button and rail only ever
-   automatic.
-2. **Does the rail show calendars, or only accounts?** Four accounts with sixteen calendars
-   is a long rail. Proposed: account avatars always, calendar dots under the account the
-   pointer is over.
+1. **State is chosen from a kebab menu** at the top of the sidebar, not a cycling button.
+   Three states do not fit one toggle, and a menu names each state instead of making the
+   user discover it by pressing repeatedly.
+2. **The rail shows account avatars only.** Calendar visibility needs the expanded sidebar.
+   Sixteen calendar dots is not a rail, it is a second scrolling list.
+
+Criterion 7 still binds: an account needing re-auth must be visible in the rail, so the
+avatar itself carries that state.
