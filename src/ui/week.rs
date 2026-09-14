@@ -64,7 +64,7 @@ pub struct Week {
     span: Rc<Cell<Span>>,
     items: RefCell<Vec<Item>>,
     /// The zone the grid is drawn in: the user's own, not any calendar's.
-    zone: Tz,
+    zone: Cell<Tz>,
     /// Hour labels, resized when compression changes rather than rebuilt.
     hours: Vec<gtk::Label>,
     /// Which hours hold an event, across every day on screen. Shared with the draw closure
@@ -195,7 +195,7 @@ impl Week {
             occupied,
             core,
             items: RefCell::new(Vec::new()),
-            zone: local_zone(),
+            zone: Cell::new(local_zone()),
             palette,
         });
         week.install_grid_drawing();
@@ -255,7 +255,7 @@ impl Week {
         let spans = items
             .iter()
             .filter(|item| !item.all_day)
-            .flat_map(|item| segments(item.start_utc, item.end_utc, start, self.zone, days))
+            .flat_map(|item| segments(item.start_utc, item.end_utc, start, self.zone.get(), days))
             .map(|segment| (segment.top_minutes, segment.height_minutes));
         *self.occupied.borrow_mut() = vertical::occupied_hours(spans);
         self.resize_axis();
@@ -304,7 +304,8 @@ impl Week {
             lane.set_hexpand(true);
             lane.set_size_request((column_width as i32).max(1), -1);
             for item in items.iter().filter(|item| item.all_day) {
-                for segment in segments(item.start_utc, item.end_utc, start, self.zone, days) {
+                for segment in segments(item.start_utc, item.end_utc, start, self.zone.get(), days)
+                {
                     if segment.day == day {
                         lane.append(&event_widget(item, 18, column_width as i32));
                     }
@@ -317,7 +318,8 @@ impl Week {
         for day in 0..days {
             let mut placed: Vec<(&Item, super::layout::Segment)> = Vec::new();
             for item in items.iter().filter(|item| !item.all_day) {
-                for segment in segments(item.start_utc, item.end_utc, start, self.zone, days) {
+                for segment in segments(item.start_utc, item.end_utc, start, self.zone.get(), days)
+                {
                     if segment.day == day {
                         placed.push((item, segment));
                     }
@@ -380,7 +382,16 @@ impl Week {
     }
 
     pub fn zone(&self) -> Tz {
-        self.zone
+        self.zone.get()
+    }
+
+    /// Change the zone the grid is drawn in. Events keep their instants; only where they
+    /// land moves.
+    pub fn set_display_zone(self: &Rc<Self>, zone: Tz) {
+        self.zone.set(zone);
+        self.recompute_occupancy();
+        self.place_items();
+        self.refresh();
     }
 
     /// Move by one press of previous/next. The distance is the span's, not the column
@@ -513,6 +524,25 @@ fn class_for(color: &str) -> String {
 /// Read from the system rather than through a crate: `/etc/localtime` is a symlink into the
 /// zoneinfo tree on every Linux this targets, and `chrono::Local` exposes an offset but not
 /// the zone name that DST arithmetic needs.
+/// The zone to draw in: the user's setting if they have one, the system's otherwise.
+///
+/// An unreadable or unknown name falls back rather than failing to start — a typo in a
+/// preferences file should cost the user their preference, not their calendar. The fallback
+/// is logged, because silently drawing in the wrong zone is the kind of bug that gets
+/// noticed twice a year.
+pub fn display_zone(configured: Option<&str>) -> Tz {
+    match configured {
+        Some(name) => match name.parse::<Tz>() {
+            Ok(zone) => zone,
+            Err(_) => {
+                tracing::warn!(zone = name, "unknown timezone; using the system's");
+                local_zone()
+            }
+        },
+        None => local_zone(),
+    }
+}
+
 fn local_zone() -> Tz {
     std::env::var("TZ")
         .ok()
@@ -619,6 +649,28 @@ mod tests {
     #[test]
     fn a_range_crossing_a_year_names_both_years() {
         assert_eq!(title_for(on("2026-12-28"), 7), "28 Dec 2026 – 3 Jan 2027");
+    }
+
+    #[test]
+    fn a_configured_zone_wins_over_the_system() {
+        assert_eq!(
+            display_zone(Some("America/New_York")),
+            chrono_tz::America::New_York
+        );
+        assert_eq!(display_zone(Some("Asia/Tokyo")), chrono_tz::Asia::Tokyo);
+    }
+
+    #[test]
+    fn an_unknown_zone_falls_back_instead_of_failing_to_start() {
+        // A typo should cost the preference, not the calendar.
+        let fallback = display_zone(None);
+        assert_eq!(display_zone(Some("Mars/Olympus_Mons")), fallback);
+        assert_eq!(display_zone(Some("")), fallback);
+    }
+
+    #[test]
+    fn no_configured_zone_leaves_the_system_zone_alone() {
+        assert_eq!(display_zone(None), super::local_zone());
     }
 
     #[test]

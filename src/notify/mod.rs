@@ -35,6 +35,10 @@ pub struct Settings {
     /// holds an event. See `ui::vertical`.
     pub core_hours_start: u32,
     pub core_hours_end: u32,
+    /// The zone the grid is drawn in. `None` means the system's.
+    pub timezone: Option<String>,
+    /// An optional second zone, shown beside the first on the hour axis and on agenda rows.
+    pub secondary_timezone: Option<String>,
 }
 
 impl Default for Settings {
@@ -44,6 +48,8 @@ impl Default for Settings {
             all_day_hour: DEFAULT_ALL_DAY_HOUR,
             core_hours_start: crate::ui::vertical::DEFAULT_CORE_START,
             core_hours_end: crate::ui::vertical::DEFAULT_CORE_END,
+            timezone: None,
+            secondary_timezone: None,
         }
     }
 }
@@ -77,6 +83,8 @@ impl Settings {
                 }
             }
         }
+        settings.timezone = pairs.get("timezone").cloned();
+        settings.secondary_timezone = pairs.get("secondary_timezone").cloned();
         anyhow::ensure!(
             settings.core_hours_start < settings.core_hours_end,
             "core_hours_start must come before core_hours_end"
