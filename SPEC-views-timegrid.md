@@ -50,8 +50,10 @@ changes, and teaching navigation and the title to speak in spans.
    cheaper than an hour axis that jumps every time the user steps to a day whose all-day
    content differs — and with a holiday calendar connected, that is most days.
 7. **The current-time line appears only when today is on screen**, in the right column.
-8. **The chosen span survives a restart**, globally in `settings.toml` — assumed rather than
-   asked, since only one window exists.
+8. **The chosen span survives a restart.** Kept in its own `view-state` file beside the
+   database, *not* `settings.toml`: that file is hand-written and may carry comments, and
+   rewriting it on every span click would destroy them. This is last-used state, closer to
+   window geometry than to a preference. Changed 2026-09-14 during T3.
 9. **A week containing a DST transition still shows the right number of columns**, in every
    span, and the hour axis stays sane.
 10. **Quiet hours are compressed to half height.** Hours outside a configurable core band —
