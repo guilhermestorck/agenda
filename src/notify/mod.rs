@@ -31,6 +31,10 @@ pub const DEFAULT_ALL_DAY_HOUR: u32 = 9;
 pub struct Settings {
     pub lead_minutes: i64,
     pub all_day_hour: u32,
+    /// The hours the grid draws at full height. Outside them a row is halved, unless it
+    /// holds an event. See `ui::vertical`.
+    pub core_hours_start: u32,
+    pub core_hours_end: u32,
 }
 
 impl Default for Settings {
@@ -38,6 +42,8 @@ impl Default for Settings {
         Self {
             lead_minutes: DEFAULT_LEAD_MINUTES,
             all_day_hour: DEFAULT_ALL_DAY_HOUR,
+            core_hours_start: crate::ui::vertical::DEFAULT_CORE_START,
+            core_hours_end: crate::ui::vertical::DEFAULT_CORE_END,
         }
     }
 }
@@ -58,6 +64,23 @@ impl Settings {
             anyhow::ensure!(hour < 24, "all_day_notify_hour must be an hour of the day");
             settings.all_day_hour = hour;
         }
+        for (key, field) in [("core_hours_start", 0usize), ("core_hours_end", 1usize)] {
+            if let Some(value) = pairs.get(key) {
+                let hour: u32 = value
+                    .parse()
+                    .with_context(|| format!("{key} is not a number: {value}"))?;
+                anyhow::ensure!(hour <= 24, "{key} must be an hour of the day");
+                if field == 0 {
+                    settings.core_hours_start = hour;
+                } else {
+                    settings.core_hours_end = hour;
+                }
+            }
+        }
+        anyhow::ensure!(
+            settings.core_hours_start < settings.core_hours_end,
+            "core_hours_start must come before core_hours_end"
+        );
         Ok(settings)
     }
 
@@ -225,6 +248,21 @@ mod tests {
                 updated_at: None,
             },
         }
+    }
+
+    #[test]
+    fn the_core_band_is_read_from_the_settings_file() {
+        let settings =
+            Settings::parse("core_hours_start = \"6\"\ncore_hours_end = \"20\"").unwrap();
+        assert_eq!(settings.core_hours_start, 6);
+        assert_eq!(settings.core_hours_end, 20);
+    }
+
+    #[test]
+    fn a_core_band_that_ends_before_it_starts_is_rejected() {
+        // Silently swapping them would draw a grid nobody asked for; a typo should cost the
+        // preference, not the layout.
+        assert!(Settings::parse("core_hours_start = \"20\"\ncore_hours_end = \"8\"").is_err());
     }
 
     #[test]

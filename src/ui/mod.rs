@@ -6,6 +6,7 @@
 
 pub mod layout;
 pub mod span;
+pub mod vertical;
 pub mod week;
 
 use std::rc::Rc;
@@ -193,6 +194,10 @@ fn build_content(ui: &Rc<Ui>) -> gtk::Widget {
         .and_then(|key| span::Span::from_key(key))
         .unwrap_or_default();
     ui.week.set_span(span);
+    ui.week.set_core_hours(vertical::Core {
+        start: ui.settings.core_hours_start,
+        end: ui.settings.core_hours_end,
+    });
 
     let labels: Vec<&str> = span::Span::ALL.iter().map(|span| span.label()).collect();
     let switcher = gtk::DropDown::from_strings(&labels);

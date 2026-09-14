@@ -17,10 +17,8 @@ use crate::accounts::style::{Colors, text_on};
 
 use super::layout::{columns, segments};
 use super::span::Span;
+use super::vertical::{self, Core, HOUR_HEIGHT, day_height, hour_height, y_for};
 
-/// Pixels per hour. The whole day is drawn and scrolled rather than collapsed to working
-/// hours, because "working hours" is a preference nobody has expressed yet.
-pub const HOUR_HEIGHT: f64 = 48.0;
 /// Width of the hour axis down the left.
 pub const AXIS_WIDTH: i32 = 56;
 /// Columns at the widest span. Labels are built once at this count and hidden when the
@@ -61,6 +59,12 @@ pub struct Week {
     items: RefCell<Vec<Item>>,
     /// The zone the grid is drawn in: the user's own, not any calendar's.
     zone: Tz,
+    /// Hour labels, resized when compression changes rather than rebuilt.
+    hours: Vec<gtk::Label>,
+    /// Which hours hold an event, across every day on screen. Shared with the draw closure
+    /// so the grid lines and the events cannot disagree about where an hour sits.
+    occupied: Rc<RefCell<std::collections::BTreeSet<u32>>>,
+    core: Rc<Cell<Core>>,
     palette: gtk::CssProvider,
 }
 
@@ -100,8 +104,12 @@ impl Week {
         // events; a strip that appears and disappears reads as a layout glitch.
         all_day_row.set_size_request(-1, 24);
 
+        let occupied = Rc::new(RefCell::new(std::collections::BTreeSet::new()));
+        let core = Rc::new(Cell::new(Core::default()));
+
         let axis = gtk::Box::new(Orientation::Vertical, 0);
         axis.set_size_request(AXIS_WIDTH, -1);
+        let mut hours = Vec::with_capacity(24);
         for hour in 0..24 {
             let label = gtk::Label::new(Some(&format!("{hour:02}:00")));
             label.add_css_class("dim-label");
@@ -111,11 +119,12 @@ impl Week {
             label.set_margin_end(6);
             label.set_size_request(-1, HOUR_HEIGHT as i32);
             axis.append(&label);
+            hours.push(label);
         }
 
         let grid = gtk::DrawingArea::new();
         grid.set_hexpand(true);
-        grid.set_content_height((HOUR_HEIGHT * 24.0) as i32);
+        grid.set_content_height(day_height(&occupied.borrow(), core.get()) as i32);
 
         let canvas = gtk::Fixed::new();
         canvas.set_hexpand(true);
@@ -138,9 +147,17 @@ impl Week {
 
         // Open on the working day rather than at midnight. The hours before dawn are the
         // least likely to hold anything, and scrolling past them on every launch is a chore.
+        // Measured through the mapping, not multiplied: those early hours are compressed, so
+        // multiplying scrolls far past where 07:00 actually sits.
         let adjustment = scroller.vadjustment();
+        let scroll_occupied = occupied.clone();
+        let scroll_core = core.clone();
         glib::idle_add_local_once(move || {
-            adjustment.set_value(FIRST_VISIBLE_HOUR * HOUR_HEIGHT);
+            adjustment.set_value(y_for(
+                FIRST_VISIBLE_HOUR * 60.0,
+                &scroll_occupied.borrow(),
+                scroll_core.get(),
+            ));
         });
 
         let root = gtk::Box::new(Orientation::Vertical, 0);
@@ -168,6 +185,9 @@ impl Week {
             grid,
             focus,
             span,
+            hours,
+            occupied,
+            core,
             items: RefCell::new(Vec::new()),
             zone: local_zone(),
             palette,
@@ -182,6 +202,7 @@ impl Week {
     /// view never reads the store itself.
     pub fn set_items(self: &Rc<Self>, items: Vec<Item>) {
         *self.items.borrow_mut() = items;
+        self.recompute_occupancy();
         self.rebuild_palette();
         self.place_items();
     }
@@ -217,6 +238,42 @@ impl Week {
     }
 
     /// Position every item on the grid for the current week and width.
+    /// Which hours hold an event, across every day on screen.
+    ///
+    /// Computed once per redraw over the whole span rather than per column: the hour axis is
+    /// shared, so an hour is tall for every day or for none.
+    fn recompute_occupancy(self: &Rc<Self>) {
+        let start = self.start();
+        let days = self.span.get().days();
+        let items = self.items.borrow();
+        let spans = items
+            .iter()
+            .filter(|item| !item.all_day)
+            .flat_map(|item| segments(item.start_utc, item.end_utc, start, self.zone, days))
+            .map(|segment| (segment.top_minutes, segment.height_minutes));
+        *self.occupied.borrow_mut() = vertical::occupied_hours(spans);
+        self.resize_axis();
+    }
+
+    /// Match the hour labels and the canvas to the current mapping.
+    fn resize_axis(self: &Rc<Self>) {
+        let occupied = self.occupied.borrow();
+        let core = self.core.get();
+        for (hour, label) in self.hours.iter().enumerate() {
+            label.set_size_request(-1, hour_height(hour as u32, &occupied, core) as i32);
+        }
+        self.grid
+            .set_content_height(day_height(&occupied, core) as i32);
+    }
+
+    /// The hours drawn at full height whatever they hold.
+    pub fn set_core_hours(self: &Rc<Self>, core: Core) {
+        self.core.set(core);
+        self.recompute_occupancy();
+        self.place_items();
+        self.grid.queue_draw();
+    }
+
     fn place_items(self: &Rc<Self>) {
         while let Some(child) = self.canvas.first_child() {
             self.canvas.remove(&child);
@@ -264,14 +321,23 @@ impl Week {
             let geometry: Vec<super::layout::Segment> =
                 placed.iter().map(|(_, segment)| *segment).collect();
             for ((item, segment), (column, of)) in placed.iter().zip(columns(&geometry)) {
-                let height = segment.height_minutes / 60.0 * HOUR_HEIGHT;
+                // Never `duration × scale`: an event crossing the core boundary spans two
+                // different hour heights, so it is measured as the distance between its ends.
+                let occupied = self.occupied.borrow();
+                let core = self.core.get();
+                let top = y_for(segment.top_minutes, &occupied, core);
+                let height = y_for(
+                    segment.top_minutes + segment.height_minutes,
+                    &occupied,
+                    core,
+                ) - top;
                 let slot = column_width / of as f64;
                 let widget = event_widget(item, height as i32, slot as i32);
                 widget.set_size_request((slot as i32 - 2).max(1), (height as i32 - 1).max(1));
                 self.canvas.put(
                     &widget,
                     day as f64 * column_width + column as f64 * slot + 1.0,
-                    segment.top_minutes / 60.0 * HOUR_HEIGHT,
+                    top,
                 );
             }
         }
@@ -328,6 +394,8 @@ impl Week {
     fn install_grid_drawing(self: &Rc<Self>) {
         let focus = self.focus.clone();
         let span = self.span.clone();
+        let occupied = self.occupied.clone();
+        let core = self.core.clone();
         self.grid
             .set_draw_func(move |area, context, width, height| {
                 let width = f64::from(width);
@@ -345,8 +413,10 @@ impl Week {
                 );
                 context.set_line_width(1.0);
 
+                let occupied = occupied.borrow();
+                let core = core.get();
                 for hour in 0..=24 {
-                    let y = (f64::from(hour) * HOUR_HEIGHT).floor() + 0.5;
+                    let y = y_for(f64::from(hour) * 60.0, &occupied, core).floor() + 0.5;
                     context.move_to(0.0, y);
                     context.line_to(width, y);
                 }
@@ -363,7 +433,7 @@ impl Week {
                 if (0..days as i64).contains(&offset) {
                     let now = Local::now();
                     let minutes = f64::from(now.hour() * 60 + now.minute());
-                    let y = minutes / 60.0 * HOUR_HEIGHT;
+                    let y = y_for(minutes, &occupied, core);
                     context.set_source_rgba(0.88, 0.11, 0.16, 0.9);
                     context.set_line_width(2.0);
                     context.move_to(offset as f64 * column, y);
