@@ -26,11 +26,11 @@ account connected at once, the other is gated on the user.
 | 5 | Styling is the user's and persists | **Met at the data layer** | A test runs a real sync over a set colour and visibility and asserts both survive; another reconnects an account and asserts label, colour and ordering survive. A live full resync has not been run. |
 | 6 | A second account can be added from the UI | **Code complete, unexercised** | "Connect account" is in the header bar at all times and needs no new credentials. Never run against Google's consent screen. |
 | 7 | Duplicates render honestly and are detectable | **Verified by query** | On four live accounts, `SELECT … GROUP BY ical_uid HAVING count(DISTINCT account) > 1` returned **551 distinct meetings present on two or more accounts**, and **zero** events anywhere were missing an `ical_uid`. Exactly the check §2.7 specifies — by query, not by eye. The rendering half (two copies, two markers) is verified visually against a synthetic database. |
-| 8 | Offline works | **Met** | The window paints from SQLite before the scheduler is armed, so no first paint waits on the network. A session pointed at a closed port degrades to a transient failure, not a revoked credential. The `nmcli` walkthrough is left to the user. |
+| 8 | Offline works | **Verified with the network down** | With `nmcli networking off` and DNS failing, a cold start painted `week=2026-09-14 events=2` — the two events genuinely in that week — from SQLite. Zero `ERROR` lines, zero "needs reconnecting": the failure was classified transient, as an absent network must be. The 388 stored events were untouched by the failed sync, and syncing resumed on its own when the network returned. |
 | 9 | Reminders fire | **Met, end to end** | A seeded event produced a real desktop notification 30 seconds after launch, through the actual notification daemon. Recurring occurrences are covered by the window query. The suspend/resume cycle is left to the user; the catch-up path is unit-tested. |
-| 10 | The tray is live | **Met** | The item registers as `org.kde.StatusNotifierItem-<pid>-1` and its `ToolTip`, read back off the bus, matches what the grid shows. The `plasmashell` restart is left to the user. |
+| 10 | The tray is live | **Verified across a plasmashell restart** | The item registers as `org.kde.StatusNotifierItem-<pid>-1` with a `ToolTip` naming the next real event. After `systemctl --user restart plasma-plasmashell` the same item was registered again with the same tooltip — ksni re-registers on host loss without the application noticing. |
 | 11 | Re-auth is graceful and isolated | **Met in mechanism** | An account whose tokens are absent is parked on its own Reconnect button with a single toast, while the others carry on; one calendar failing does not cost the account the rest. Verified with tokens missing rather than revoked, and with synthetic accounts. |
-| 12 | Evolution is gone | **Not done — gated on the user** | Nothing has been touched. See below. |
+| 12 | Evolution is gone | **Half done** | `evolution` is uninstalled. **`evolution-data-server 3.60.2-5` is still installed**, with four of its daemons running — including `evolution-alarm-notify`, which means the old stack is still firing calendar alarms alongside agenda's. Nothing depends on it (`pactree -r` returns only itself), so removal is safe; it needs the user's password. |
 | 13 | The §8 quality bar, with no suppressions | **Met** | 223 tests passing, `cargo clippy --all-targets` clean at zero warnings, zero `#[allow(...)]` attributes anywhere in `src/`, one `#[ignore]`d test carrying its reason (it writes to the real keyring), `cargo fmt` clean. |
 
 ## What is actually blocking
@@ -62,17 +62,17 @@ concern — left raw, the `#` truncates the request at a fragment.
 
 ## Evolution
 
-**Untouched, and staying that way until the user says otherwise** (`SPEC.md` §9).
+`evolution` was removed by the user on 2026-09-14. `evolution-data-server` remains, and
+until it goes the criterion is not met — its `evolution-alarm-notify` daemon is still
+running, so calendar alarms are being fired by two stacks at once.
+
+```
+sudo pacman -Rns evolution-data-server
+```
 
 `migration-backup/` holds the only copy of the single EDS event and has not been read,
 modified or deleted. The ICS import that would restore it is M6, deferred past v1, so
-removing `~/.config/evolution` and `~/.local/share/evolution` should wait for it regardless.
-
-When the user chooses to proceed, the commands are theirs to run:
-
-```
-sudo pacman -Rns evolution evolution-data-server
-```
+`~/.config/evolution` and `~/.local/share/evolution` should stay until that lands.
 
 ## Deferred past v1, and untouched
 
