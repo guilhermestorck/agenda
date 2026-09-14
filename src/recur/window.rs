@@ -32,6 +32,15 @@ pub fn occurrences_in_window(
 ) -> Result<Vec<Occurrence>> {
     let candidates = store.events_for_window(start_utc, end_utc)?;
 
+    // A cancelled standalone event is simply gone, and must not reach any view. Cancelled
+    // *exceptions* are kept: those are tombstones, and dropping them here would resurrect
+    // every occurrence they exist to suppress. Filtered at the source rather than per view,
+    // so the grid, month, agenda and tray cannot disagree about what is cancelled.
+    let candidates: Vec<Event> = candidates
+        .into_iter()
+        .filter(|event| event.recurring_event_id.is_some() || event.status != "cancelled")
+        .collect();
+
     let (exceptions, series): (Vec<Event>, Vec<Event>) = candidates
         .into_iter()
         .partition(|event| event.recurring_event_id.is_some());
@@ -230,6 +239,38 @@ mod tests {
             at("2026-09-14 17:30:00"),
             "and at the time it moved to"
         );
+    }
+
+    #[test]
+    fn a_cancelled_standalone_event_never_reaches_a_view() {
+        // Found by fixture data on 2026-09-14: the grid rendered "Vendor call (cancelled)"
+        // because collect_items never checked status, and month, agenda and tray would all
+        // have inherited it.
+        let store = store();
+        let mut cancelled = event(
+            "work@example.com",
+            "primary",
+            "vendor-call",
+            "2026-09-16 13:00:00",
+            30,
+        );
+        cancelled.status = "cancelled".to_string();
+        let live = event(
+            "work@example.com",
+            "primary",
+            "stays",
+            "2026-09-16 14:00:00",
+            30,
+        );
+        store.upsert_event(&cancelled).unwrap();
+        store.upsert_event(&live).unwrap();
+
+        let found =
+            occurrences_in_window(&store, at("2026-09-16 00:00:00"), at("2026-09-17 00:00:00"))
+                .unwrap();
+
+        let summaries: Vec<&str> = found.iter().map(|o| o.event.summary.as_str()).collect();
+        assert_eq!(summaries, vec!["stays"], "a cancelled event reached a view");
     }
 
     #[test]
