@@ -555,6 +555,33 @@ fn local_zone() -> Tz {
         .unwrap_or(chrono_tz::UTC)
 }
 
+/// The secondary zone's clock reading at each hour of `day` in the primary zone.
+///
+/// Computed per hour, never once. Two zones do not change their offsets on the same date —
+/// the EU moves on the last Sunday of October and the United States on the first of
+/// November — so for a week each autumn the gap between them is one thing in the morning and
+/// another in the afternoon. A single cached offset is right for fifty weeks of the year and
+/// quietly wrong for the other two.
+pub fn secondary_hours(day: NaiveDate, primary: Tz, secondary: Tz) -> Vec<String> {
+    use chrono::TimeZone;
+    (0..24)
+        .map(|hour| {
+            let Some(naive) = day.and_hms_opt(hour, 0, 0) else {
+                return String::new();
+            };
+            // A local hour that DST skipped has no instant; the one that repeats has two,
+            // and the earlier reading is the one the grid is already drawing.
+            match primary.from_local_datetime(&naive).earliest() {
+                Some(instant) => instant
+                    .with_timezone(&secondary)
+                    .format("%H:%M")
+                    .to_string(),
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
 fn zone_name_of(link: &str) -> Option<String> {
     link.split_once("/zoneinfo/")
         .map(|(_, zone)| zone.to_string())
@@ -649,6 +676,35 @@ mod tests {
     #[test]
     fn a_range_crossing_a_year_names_both_years() {
         assert_eq!(title_for(on("2026-12-28"), 7), "28 Dec 2026 – 3 Jan 2027");
+    }
+
+    #[test]
+    fn a_second_zone_reads_across_from_the_first() {
+        let day = NaiveDate::from_ymd_opt(2026, 9, 14).unwrap();
+        let hours = secondary_hours(day, chrono_tz::Europe::Madrid, chrono_tz::America::New_York);
+        // Madrid is CEST (+02:00) and New York EDT (-04:00) in September: six hours behind.
+        assert_eq!(hours[12], "06:00");
+        assert_eq!(hours[0], "18:00");
+    }
+
+    #[test]
+    fn the_offset_is_recomputed_for_every_hour_not_cached_once() {
+        // 25 October 2026: the EU leaves summer time at 03:00 local, the United States does
+        // not until 1 November. So Madrid is six hours ahead of New York before the change
+        // and five after — within the same day, on the same axis.
+        let day = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+        let hours = secondary_hours(day, chrono_tz::Europe::Madrid, chrono_tz::America::New_York);
+
+        assert_eq!(hours[1], "19:00", "01:00 CEST is 19:00 EDT the day before");
+        assert_eq!(hours[12], "07:00", "12:00 CET is 07:00 EDT");
+    }
+
+    #[test]
+    fn a_zone_with_no_transition_reads_evenly_all_day() {
+        let day = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+        let hours = secondary_hours(day, chrono_tz::Europe::Madrid, chrono_tz::UTC);
+        assert_eq!(hours.len(), 24);
+        assert!(hours.iter().all(|reading| !reading.is_empty()));
     }
 
     #[test]
