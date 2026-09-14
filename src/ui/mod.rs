@@ -8,6 +8,7 @@ pub mod agenda;
 pub mod layout;
 pub mod month;
 pub mod span;
+pub mod tray_day;
 pub mod vertical;
 pub mod week;
 
