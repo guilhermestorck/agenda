@@ -42,6 +42,12 @@ pub struct Item {
     /// The account's cached profile picture, if one has been downloaded. Resolved once per
     /// redraw rather than per event, and never fetched here — the grid does no I/O.
     pub picture: Option<std::path::PathBuf>,
+    /// How many minutes before the start the reminder fires, already resolved through
+    /// `notify`'s cascade. `None` when nothing will fire.
+    ///
+    /// Resolved once, where the colours are resolved, so the band the grid draws and the
+    /// notification the scheduler sends cannot disagree about when the user gets told.
+    pub lead_minutes: Option<i64>,
 }
 
 pub struct Week {

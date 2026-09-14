@@ -1059,6 +1059,15 @@ fn collect_items(ui: &Rc<Ui>, from: i64, to: i64) -> anyhow::Result<Vec<week::It
                 occurrence.event.account.clone(),
                 occurrence.event.calendar_id.clone(),
             ))?;
+            // The same call the scheduler makes. Two resolutions of the same cascade would
+            // eventually disagree, and a band promising a reminder that never comes is
+            // worse than no band.
+            let lead = notify::lead_minutes(
+                occurrence.event.reminder_minutes,
+                calendar.notify_lead_minutes,
+                account.notify_lead_minutes,
+                ui.settings.lead_minutes,
+            );
             Some(week::Item {
                 summary: if occurrence.event.summary.is_empty() {
                     "(no title)".to_string()
@@ -1075,6 +1084,9 @@ fn collect_items(ui: &Rc<Ui>, from: i64, to: i64) -> anyhow::Result<Vec<week::It
                     .or_else(|| account.display_name.clone())
                     .unwrap_or_else(|| account.email.clone()),
                 picture: pictures.get(&account.email).cloned(),
+                // All-day events take their reminder from notify's own all_day_hour rule,
+                // which has no place on an hour axis — the band is for timed events.
+                lead_minutes: (!occurrence.event.all_day).then_some(lead),
             })
         })
         .collect())

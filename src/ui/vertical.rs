@@ -98,6 +98,31 @@ pub fn occupied_hours(spans: impl IntoIterator<Item = (f64, f64)>) -> BTreeSet<u
     hours
 }
 
+/// Where the reminder band goes: from the moment the reminder fires to the event's start.
+///
+/// `None` when nothing will fire, so silence looks like silence.
+///
+/// The height is the distance between two positions, never `lead × scale`. A lead crossing
+/// the core boundary — a ten-minute warning on an 08:05 meeting, say — spans two different
+/// hour heights, and scaling the duration is wrong from either side.
+///
+/// A lead reaching back past midnight is clipped to the top of the day rather than drawn
+/// above it: the previous day is not on this column.
+pub fn band(
+    start_minutes: f64,
+    lead_minutes: i64,
+    occupied: &BTreeSet<u32>,
+    core: Core,
+) -> Option<(f64, f64)> {
+    if lead_minutes <= 0 {
+        return None;
+    }
+    let fires_at = (start_minutes - lead_minutes as f64).max(0.0);
+    let top = y_for(fires_at, occupied, core);
+    let height = y_for(start_minutes, occupied, core) - top;
+    (height > 0.0).then_some((top, height))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +133,44 @@ mod tests {
 
     fn at(hours: &[u32]) -> BTreeSet<u32> {
         hours.iter().copied().collect()
+    }
+
+    #[test]
+    fn no_reminder_means_no_band() {
+        assert_eq!(band(10.0 * 60.0, 0, &none(), Core::default()), None);
+        assert_eq!(band(10.0 * 60.0, -5, &none(), Core::default()), None);
+    }
+
+    #[test]
+    fn a_band_runs_from_the_reminder_to_the_start() {
+        // 10:00 with 30 minutes' warning: both inside the core band, so full height.
+        let (top, height) = band(10.0 * 60.0, 30, &none(), Core::default()).unwrap();
+        assert_eq!(top, y_for(9.5 * 60.0, &none(), Core::default()));
+        assert_eq!(height, HOUR_HEIGHT * 0.5);
+    }
+
+    #[test]
+    fn a_band_crossing_the_core_boundary_is_measured_through_the_mapping() {
+        // 08:30 with 60 minutes' warning fires at 07:30 — half an hour in a compressed hour
+        // and half in a full one, so 0.75 of an hour tall rather than a whole one.
+        let core = Core::default();
+        let (_, height) = band(8.5 * 60.0, 60, &none(), core).unwrap();
+        assert_eq!(height, HOUR_HEIGHT * 0.25 + HOUR_HEIGHT * 0.5);
+        assert_ne!(height, HOUR_HEIGHT);
+    }
+
+    #[test]
+    fn a_band_reaching_past_midnight_is_clipped_to_the_top_of_the_day() {
+        // 00:15 with an hour's warning fires yesterday. The previous day is not on this
+        // column, so the band starts at midnight rather than above the grid.
+        let (top, height) = band(15.0, 60, &none(), Core::default()).unwrap();
+        assert_eq!(top, 0.0);
+        assert_eq!(height, y_for(15.0, &none(), Core::default()));
+    }
+
+    #[test]
+    fn a_band_on_an_event_at_midnight_exactly_is_nothing_to_draw() {
+        assert_eq!(band(0.0, 30, &none(), Core::default()), None);
     }
 
     #[test]

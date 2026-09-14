@@ -80,6 +80,7 @@ mod tests {
             },
             account: "work@example.com".to_string(),
             picture: None,
+            lead_minutes: None,
         }
     }
 
