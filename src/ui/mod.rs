@@ -6,6 +6,7 @@
 
 pub mod agenda;
 pub mod layout;
+pub mod month;
 pub mod span;
 pub mod vertical;
 pub mod week;
