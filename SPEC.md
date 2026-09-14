@@ -428,6 +428,13 @@ implying coverage that does not exist.
 - **Database schema.** The schema in §4 needs sign-off before it is written, and any change
   to it afterwards needs sign-off again. Once real synced calendars exist, a bad migration
   costs a full resync at best.
+- **Any screenshot taken by a command that captures "the active window" or the whole
+  screen.** Use `scripts/shot-agenda.sh`, which asks KWin what is focused and refuses unless
+  it is agenda. Added 2026-09-14 after `spectacle -a` captured the user's private Slack
+  conversation and, later, a Zoom call with colleagues on camera and a shared whiteboard.
+  Neither was agenda; both reached a transcript and had to be shredded. The first was
+  written off as a one-off caused by someone else launching the app — it was not. The tool
+  captures whatever happens to be focused, and focus is not ours to assume.
 - **Any `secret-tool` command, or anything else that reads the Secret Service.** Including
   the read-only ones. Added 2026-09-13 after `secret-tool search --all application agenda`
   printed four accounts' access and refresh tokens into a session transcript, which cost a
@@ -443,6 +450,8 @@ implying coverage that does not exist.
   likely accidents (`client_secret*.json` is the filename Google Cloud Console hands you).
 - Create Google Cloud credentials or attempt to authenticate on the user's behalf.
 - Weaken, skip, or delete a test to reach green.
+- Capture the screen, or any window, without first confirming which window it is. A
+  screenshot is a disclosure: whatever is on screen belongs to the user, not to the task.
 - Print, echo, or otherwise emit credential material — tokens, client secrets, passwords —
   by any means, whatever tool produces it. Redaction inside the application is not a
   substitute for not asking for the value in the first place.
