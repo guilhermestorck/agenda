@@ -5,6 +5,7 @@
 //! stays responsive for however long the user spends at Google's consent screen.
 
 pub mod layout;
+pub mod span;
 pub mod week;
 
 use std::rc::Rc;
