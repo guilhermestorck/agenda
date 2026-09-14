@@ -55,6 +55,12 @@ impl Paths {
     }
 
     /// The user's preferences, written by hand or by the app.
+    /// Last-used view state, beside the database rather than the settings: the application
+    /// rewrites this file, the user writes the other one.
+    pub fn view_state(&self) -> PathBuf {
+        self.data_dir.join("view-state")
+    }
+
     pub fn settings(&self) -> PathBuf {
         self.config_dir.join("settings.toml")
     }
@@ -138,6 +144,37 @@ fn filename_for(email: &str) -> String {
 /// Unknown keys are kept rather than rejected: the file is the user's, and a setting they
 /// added by hand is not a reason to refuse to start. Quoted values are unquoted; bare ones
 /// (numbers, mostly) are taken as they stand.
+/// Last-used view state — which span was on screen, whether the sidebar was collapsed.
+///
+/// Deliberately **not** `settings.toml`. That file is hand-written and may carry comments;
+/// rewriting it every time the user clicks a different span would destroy them. This is
+/// state the application owns and rewrites freely, closer to window geometry than to a
+/// preference, so it lives beside the database rather than beside the settings.
+pub fn view_state(path: &Path) -> std::collections::HashMap<String, String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| parse_pairs(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Write one key, keeping every other key already in the file.
+pub fn set_view_state(path: &Path, key: &str, value: &str) -> Result<()> {
+    let mut state = view_state(path);
+    state.insert(key.to_string(), value.to_string());
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("could not create {}", parent.display()))?;
+    }
+    let mut keys: Vec<&String> = state.keys().collect();
+    keys.sort();
+    let body: String = keys
+        .iter()
+        .map(|key| format!("{key} = \"{}\"\n", state[*key]))
+        .collect();
+    std::fs::write(path, body).with_context(|| format!("could not write {}", path.display()))
+}
+
 pub fn parse_pairs(text: &str) -> Result<std::collections::HashMap<String, String>> {
     let mut pairs = std::collections::HashMap::new();
     for line in text.lines() {
@@ -185,6 +222,38 @@ fn unquote(raw: &str) -> Result<String> {
         .find(quote)
         .with_context(|| format!("unterminated quote in: {raw}"))?;
     Ok(rest[..end].to_string())
+}
+
+#[cfg(test)]
+mod view_state_tests {
+    use super::*;
+
+    #[test]
+    fn a_written_key_survives_a_round_trip_and_leaves_the_others_alone() {
+        let dir = std::env::temp_dir().join(format!("agenda-vs-{}", std::process::id()));
+        let path = dir.join("view-state");
+        let _ = std::fs::remove_file(&path);
+
+        set_view_state(&path, "span", "work").unwrap();
+        set_view_state(&path, "sidebar", "rail").unwrap();
+
+        let state = view_state(&path);
+        assert_eq!(state.get("span").map(String::as_str), Some("work"));
+        assert_eq!(state.get("sidebar").map(String::as_str), Some("rail"));
+
+        // Rewriting one key must not drop the other — the whole point of read-modify-write.
+        set_view_state(&path, "span", "day").unwrap();
+        let state = view_state(&path);
+        assert_eq!(state.get("span").map(String::as_str), Some("day"));
+        assert_eq!(state.get("sidebar").map(String::as_str), Some("rail"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_file_is_empty_rather_than_an_error() {
+        assert!(view_state(Path::new("/nonexistent/agenda/view-state")).is_empty());
+    }
 }
 
 #[cfg(test)]

@@ -395,14 +395,30 @@ impl Week {
             }
         }
 
-        let end = start + Duration::days(6);
-        self.title.set_text(&if start.month() == end.month() {
-            format!("{} – {}", start.format("%-d"), end.format("%-d %B %Y"))
-        } else {
-            format!("{} – {}", start.format("%-d %b"), end.format("%-d %b %Y"))
-        });
+        self.title.set_text(&title_for(start, days));
 
         self.grid.queue_draw();
+    }
+}
+
+/// The header's date range. A single day names itself rather than claiming a range, and a
+/// range spanning two months names both — "14 – 20 September" is wrong when the 20th is in
+/// October.
+fn title_for(start: NaiveDate, days: usize) -> String {
+    if days <= 1 {
+        return start.format("%A %-d %B %Y").to_string();
+    }
+    let end = start + Duration::days(days as i64 - 1);
+    if start.month() == end.month() {
+        format!("{} – {}", start.format("%-d"), end.format("%-d %B %Y"))
+    } else if start.year() == end.year() {
+        format!("{} – {}", start.format("%-d %b"), end.format("%-d %b %Y"))
+    } else {
+        format!(
+            "{} – {}",
+            start.format("%-d %b %Y"),
+            end.format("%-d %b %Y")
+        )
     }
 }
 
@@ -501,6 +517,33 @@ fn weekday_name(weekday: Weekday) -> &'static str {
 mod tests {
     use super::*;
     use crate::ui::span::monday_of;
+
+    fn on(text: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(text, "%Y-%m-%d").unwrap()
+    }
+
+    #[test]
+    fn a_single_day_names_itself_rather_than_claiming_a_range() {
+        assert_eq!(title_for(on("2026-09-14"), 1), "Monday 14 September 2026");
+    }
+
+    #[test]
+    fn a_range_inside_one_month_names_the_month_once() {
+        assert_eq!(title_for(on("2026-09-14"), 7), "14 – 20 September 2026");
+        assert_eq!(title_for(on("2026-09-14"), 5), "14 – 18 September 2026");
+        assert_eq!(title_for(on("2026-09-14"), 3), "14 – 16 September 2026");
+    }
+
+    #[test]
+    fn a_range_crossing_a_month_names_both() {
+        // "28 – 4 September" would be a lie about where the range ends.
+        assert_eq!(title_for(on("2026-09-28"), 7), "28 Sep – 4 Oct 2026");
+    }
+
+    #[test]
+    fn a_range_crossing_a_year_names_both_years() {
+        assert_eq!(title_for(on("2026-12-28"), 7), "28 Dec 2026 – 3 Jan 2027");
+    }
 
     #[test]
     fn the_zone_name_is_read_out_of_the_localtime_symlink() {

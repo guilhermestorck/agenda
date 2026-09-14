@@ -54,6 +54,9 @@ struct Ui {
     pending_sync: RefCell<Option<glib::SourceId>>,
     syncing: Cell<bool>,
     settings: notify::Settings,
+    /// Where the last-used span and sidebar state are kept. Not `settings.toml`: the user
+    /// writes that one, the application writes this one.
+    view_state: std::path::PathBuf,
     /// The instant reminders were last checked up to. Everything due after it and at or
     /// before now is delivered, which is what makes a suspend across a reminder harmless.
     reminded_to: Cell<i64>,
@@ -124,6 +127,7 @@ fn startup() -> anyhow::Result<gtk::Widget> {
         needs_reconnect: RefCell::new(HashSet::new()),
         tray: RefCell::new(None),
         settings: notify::Settings::load(&paths.settings()),
+        view_state: paths.view_state(),
         // Backdated, so launching a few minutes after a reminder came due still tells the
         // user about the meeting they are about to be late for. `due` already drops anything
         // whose event has ended, so this cannot produce a flood of stale notices.
@@ -182,8 +186,39 @@ fn build_content(ui: &Rc<Ui>) -> gtk::Widget {
         refresh_week(&clone);
     });
 
+    // Restored before the handler is connected, so restoring does not look like a click.
+    let saved = crate::config::view_state(&ui.view_state);
+    let span = saved
+        .get("span")
+        .and_then(|key| span::Span::from_key(key))
+        .unwrap_or_default();
+    ui.week.set_span(span);
+
+    let labels: Vec<&str> = span::Span::ALL.iter().map(|span| span.label()).collect();
+    let switcher = gtk::DropDown::from_strings(&labels);
+    switcher.set_selected(
+        span::Span::ALL
+            .iter()
+            .position(|candidate| *candidate == span)
+            .unwrap_or(0) as u32,
+    );
+    switcher.set_tooltip_text(Some("How many days to show"));
+    let clone = ui.clone();
+    switcher.connect_selected_notify(move |switcher| {
+        let Some(span) = span::Span::ALL.get(switcher.selected() as usize).copied() else {
+            return;
+        };
+        clone.week.set_span(span);
+        refresh_week(&clone);
+        if let Err(error) = crate::config::set_view_state(&clone.view_state, "span", span.key()) {
+            // A span that fails to persist is a small loss; refusing to switch is a big one.
+            tracing::warn!(error = %format!("{error:#}"), "could not remember the span");
+        }
+    });
+
     header.pack_end(&navigation);
     header.pack_end(&today);
+    header.pack_end(&switcher);
     header.set_title_widget(Some(ui.week.title()));
 
     ui.sidebar.set_margin_top(6);
