@@ -54,6 +54,38 @@ changes, and teaching navigation and the title to speak in spans.
    asked, since only one window exists.
 9. **A week containing a DST transition still shows the right number of columns**, in every
    span, and the hour axis stays sane.
+10. **Quiet hours are compressed to half height.** Hours outside a configurable core band —
+    `core_hours_start` and `core_hours_end` in `settings.toml`, defaulting to 08:00 and
+    22:00 — render at half the usual row height, so a day is graspable without scrolling.
+11. **An hour containing an event renders at full height**, even outside the core band, and
+    it does so **for every column at once**. See the constraint below.
+
+## The vertical mapping
+
+This is the part of the module everything else inherits, so it is stated rather than left to
+implementation.
+
+Time currently maps to pixels linearly: `y = minutes / 60 × HOUR_HEIGHT`. Criteria 10 and 11
+make that **piecewise and data-dependent**, and three things follow.
+
+**One mapping for the whole grid.** The hour axis is a single column shared by every day, so
+it cannot claim 06:00 is tall for Monday and short for Tuesday. An hour expands if *any*
+visible day has an event in it, and then expands for all columns.
+
+**The consequence is accepted deliberately.** In day view this is exactly right. In week
+view, one early meeting anywhere in the week expands that hour for the whole week — and with
+four accounts connected, most weeks will have something before 08:00, so compression will
+often be inert there. Decided 2026-09-14: one coherent rule beats a rule that changes with
+the span.
+
+**Height is never `duration × scale`.** An event from 07:00 to 09:00 crosses the boundary, so
+its height is `y(end) − y(start)` computed through the same mapping. Anything else is wrong
+exactly at the boundary, which is where the 07:30 meeting the user actually cares about
+lives.
+
+`layout.rs` is unaffected: it returns minutes and stays a pure function of the span. Only the
+grid converts minutes to pixels, and `y` takes the occupied-hour set as an argument rather
+than reading widgets — so it stays a pure function and is unit-tested like the rest.
 
 ## Commands
 
@@ -66,7 +98,7 @@ Unchanged from `SPEC.md` §5 — `cargo build`, `cargo test`, `cargo clippy --al
 src/ui/week.rs     → becomes the parameterised grid; likely renamed src/ui/timegrid.rs
 src/ui/layout.rs   → unchanged; already takes a day count
 src/ui/mod.rs      → the query window follows the span instead of a constant 7
-src/config.rs      → the remembered span, in settings.toml
+src/config.rs      → the remembered span and the core hour bounds, in settings.toml
 ```
 
 No new module directory. A second file appears only if the switcher grows past a few widgets.
@@ -93,6 +125,14 @@ so criteria 4, 5 and 9 are unit tests, not screenshots:
 - a span crossing the Madrid DST transition still yields the expected column count, each day
   measured against its own midnight
 
+`y(minutes, occupied_hours, core_bounds)` is pure and carries its own tests:
+
+- monotonic across the whole day, so nothing ever renders above an earlier event
+- an hour outside the core band with no event is half height; with one, full height
+- hours inside the core band are always full height, occupied or not
+- an event from 07:00 to 09:00 has height `y(09:00) − y(07:00)`, not two hours of scale
+- the total height of a day with no events outside the core band is the expected saving
+
 Criteria 1, 2, 3, 6 and 7 are visual and verified by running the application.
 
 ## Boundaries
@@ -105,7 +145,8 @@ Criteria 1, 2, 3, 6 and 7 are visual and verified by running the application.
 
 **Ask first**
 - Any new dependency (`SPEC.md` §9).
-- Any change to `settings.toml`'s shape beyond adding the remembered span.
+- Any change to `settings.toml`'s shape beyond adding the remembered span and the two core
+  hour bounds.
 - Renaming `week.rs` — cosmetic, but it moves a file every other module's spec references.
 
 **Never**
