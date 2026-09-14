@@ -77,7 +77,7 @@ pub fn build(app: &adw::Application) {
         .default_height(760)
         .build();
 
-    match startup() {
+    match startup(&window) {
         Ok(content) => window.set_content(Some(&content)),
         Err(error) => {
             tracing::error!(error = %format!("{error:#}"), "could not start");
@@ -93,7 +93,7 @@ pub fn build(app: &adw::Application) {
 
 /// Decide what the window shows. A user who has not yet created an OAuth client is the
 /// expected first-run case, not a failure, so it gets an instruction rather than an error.
-fn startup() -> anyhow::Result<gtk::Widget> {
+fn startup(window: &adw::ApplicationWindow) -> anyhow::Result<gtk::Widget> {
     let paths = Paths::from_env()?;
     let oauth = paths.oauth();
 
@@ -135,7 +135,7 @@ fn startup() -> anyhow::Result<gtk::Widget> {
         reminded_to: Cell::new(chrono::Utc::now().timestamp() - STARTUP_GRACE),
     });
 
-    let content = build_content(&ui);
+    let content = build_content(&ui, window);
     refresh_sidebar(&ui);
     refresh_week(&ui);
     tracing::debug!(
@@ -149,7 +149,7 @@ fn startup() -> anyhow::Result<gtk::Widget> {
     Ok(content)
 }
 
-fn build_content(ui: &Rc<Ui>) -> gtk::Widget {
+fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     let header = adw::HeaderBar::new();
 
     // Reachable at any time, not only on first run — SPEC §2.6.
@@ -234,10 +234,50 @@ fn build_content(ui: &Rc<Ui>) -> gtk::Widget {
         .child(&ui.sidebar)
         .build();
 
-    let split = gtk::Box::new(Orientation::Horizontal, 0);
-    split.append(&sidebar_scroll);
-    split.append(&gtk::Separator::new(Orientation::Vertical));
-    split.append(ui.week.widget());
+    // adw handles collapsing, the overlay and the swipe gesture. Hand-rolling any of that
+    // over a gtk::Box was the previous arrangement and could not hide the sidebar at all.
+    let split = adw::OverlaySplitView::builder()
+        .sidebar(&sidebar_scroll)
+        .content(ui.week.widget())
+        .min_sidebar_width(280.0)
+        .max_sidebar_width(320.0)
+        .build();
+
+    let restored_open = saved.get("sidebar").map(String::as_str) != Some("hidden");
+    split.set_show_sidebar(restored_open);
+
+    let toggle = gtk::ToggleButton::new();
+    toggle.set_icon_name("sidebar-show-symbolic");
+    toggle.set_tooltip_text(Some("Show accounts"));
+    toggle.set_active(restored_open);
+    split
+        .bind_property("show-sidebar", &toggle, "active")
+        .bidirectional()
+        .sync_create()
+        .build();
+
+    let remember = ui.clone();
+    split.connect_show_sidebar_notify(move |split| {
+        let state = if split.shows_sidebar() {
+            "open"
+        } else {
+            "hidden"
+        };
+        if let Err(error) = crate::config::set_view_state(&remember.view_state, "sidebar", state) {
+            tracing::warn!(error = %format!("{error:#}"), "could not remember the sidebar");
+        }
+    });
+    header.pack_start(&toggle);
+
+    // A window too narrow for the sidebar collapses it to an overlay rather than crushing
+    // the grid. The user's own choice still wins until the window is resized again.
+    let breakpoint = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+        adw::BreakpointConditionLengthType::MaxWidth,
+        700.0,
+        adw::LengthUnit::Px,
+    ));
+    breakpoint.add_setter(&split, "collapsed", Some(&true.to_value()));
+    window.add_breakpoint(breakpoint);
 
     ui.toasts.set_child(Some(&split));
     let toolbar = adw::ToolbarView::new();
