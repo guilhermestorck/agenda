@@ -7,6 +7,7 @@
 pub mod agenda;
 pub mod layout;
 pub mod month;
+pub mod preferences;
 pub mod span;
 pub mod tray_day;
 pub mod vertical;
@@ -68,7 +69,8 @@ struct Ui {
     /// the life of the process, each doubling on every tick.
     pending_sync: RefCell<Option<glib::SourceId>>,
     syncing: Cell<bool>,
-    settings: notify::Settings,
+    settings: RefCell<notify::Settings>,
+    settings_path: std::path::PathBuf,
     /// Where the last-used span and sidebar state are kept. Not `settings.toml`: the user
     /// writes that one, the application writes this one.
     view_state: std::path::PathBuf,
@@ -148,7 +150,8 @@ fn startup(window: &adw::ApplicationWindow) -> anyhow::Result<gtk::Widget> {
         view: Cell::new(View::Grid),
         needs_reconnect: RefCell::new(HashSet::new()),
         tray: RefCell::new(None),
-        settings: notify::Settings::load(&paths.settings()),
+        settings: RefCell::new(notify::Settings::load(&paths.settings())),
+        settings_path: paths.settings(),
         view_state: paths.view_state(),
         // Backdated, so launching a few minutes after a reminder came due still tells the
         // user about the meeting they are about to be late for. `due` already drops anything
@@ -160,8 +163,8 @@ fn startup(window: &adw::ApplicationWindow) -> anyhow::Result<gtk::Widget> {
     refresh_sidebar(&ui);
     refresh_week(&ui);
     tracing::debug!(
-        lead = ui.settings.lead_minutes,
-        all_day_hour = ui.settings.all_day_hour,
+        lead = ui.settings.borrow().lead_minutes,
+        all_day_hour = ui.settings.borrow().all_day_hour,
         "reminder settings"
     );
     start_syncing(&ui, scheduler::MIN_INTERVAL);
@@ -231,16 +234,17 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     }
     ui.week.set_span(span);
     ui.week
-        .set_display_zone(week::display_zone(ui.settings.timezone.as_deref()));
+        .set_display_zone(week::display_zone(ui.settings.borrow().timezone.as_deref()));
     ui.week.set_secondary_zone(
         ui.settings
+            .borrow()
             .secondary_timezone
             .as_deref()
             .and_then(|name| name.parse().ok()),
     );
     ui.week.set_core_hours(vertical::Core {
-        start: ui.settings.core_hours_start,
-        end: ui.settings.core_hours_end,
+        start: ui.settings.borrow().core_hours_start,
+        end: ui.settings.borrow().core_hours_end,
     });
 
     let mut labels: Vec<&str> = span::Span::ALL.iter().map(|span| span.label()).collect();
@@ -382,6 +386,31 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
             }
         })
     };
+
+    // Preferences live behind the same kebab as the sidebar states: it is the only menu
+    // there is, and a settings file the user has to find and hand-edit is not a control.
+    let open_preferences = gtk::Button::with_label("Preferences…");
+    open_preferences.add_css_class("flat");
+    {
+        let ui = ui.clone();
+        let popover = popover.clone();
+        open_preferences.connect_clicked(move |button| {
+            popover.popdown();
+            let settings = ui.settings.borrow();
+            let applied = ui.clone();
+            let dialog = preferences::dialog(
+                settings.timezone.as_deref(),
+                settings.secondary_timezone.as_deref(),
+                settings.core_hours_start,
+                settings.core_hours_end,
+                move |key, value| apply_setting(&applied, key, value),
+            );
+            drop(settings);
+            dialog.present(Some(button));
+        });
+    }
+    choices.append(&gtk::Separator::new(Orientation::Horizontal));
+    choices.append(&open_preferences);
 
     for state in SidebarState::ALL {
         let button = gtk::Button::with_label(state.label());
@@ -899,9 +928,9 @@ fn scheduled_reminders(ui: &Rc<Ui>, from: i64, to: i64) -> Vec<(crate::recur::Oc
                     .copied()
                     .flatten(),
                 leads.get(&occurrence.event.account).copied().flatten(),
-                ui.settings.lead_minutes,
+                ui.settings.borrow().lead_minutes,
             );
-            let at = notify::notify_at(&occurrence, lead, ui.settings.all_day_hour, zone)?;
+            let at = notify::notify_at(&occurrence, lead, ui.settings.borrow().all_day_hour, zone)?;
             Some((occurrence, at))
         })
         .collect()
@@ -988,12 +1017,12 @@ fn show_day(ui: &Rc<Ui>) {
             // The same core band as the main grid: two views of one day that compress
             // different hours would be two different calendars.
             popup.grid().set_core_hours(vertical::Core {
-                start: ui.settings.core_hours_start,
-                end: ui.settings.core_hours_end,
+                start: ui.settings.borrow().core_hours_start,
+                end: ui.settings.borrow().core_hours_end,
             });
             popup
                 .grid()
-                .set_display_zone(week::display_zone(ui.settings.timezone.as_deref()));
+                .set_display_zone(week::display_zone(ui.settings.borrow().timezone.as_deref()));
             *ui.day_popup.borrow_mut() = Some(popup.clone());
             popup
         }
@@ -1029,6 +1058,51 @@ fn refresh_day_popup(ui: &Rc<Ui>, popup: &Rc<tray_day::Popup>) {
         }
         Err(error) => tracing::error!(error = %format!("{error:#}"), "could not read the day"),
     }
+}
+
+/// Apply a preference and write it back, without a restart.
+///
+/// The write preserves the rest of `settings.toml` — comments included — because the user
+/// owns that file and may well have opened it themselves.
+fn apply_setting(ui: &Rc<Ui>, key: &str, value: Option<String>) {
+    if let Err(error) = crate::config::set_setting(&ui.settings_path, key, value.as_deref()) {
+        tracing::warn!(error = %format!("{error:#}"), key, "could not save a preference");
+    }
+
+    {
+        let mut settings = ui.settings.borrow_mut();
+        match key {
+            "timezone" => settings.timezone = value.clone(),
+            "secondary_timezone" => settings.secondary_timezone = value.clone(),
+            "core_hours_start" => {
+                if let Some(hour) = value.as_deref().and_then(|v| v.parse().ok()) {
+                    settings.core_hours_start = hour;
+                }
+            }
+            "core_hours_end" => {
+                if let Some(hour) = value.as_deref().and_then(|v| v.parse().ok()) {
+                    settings.core_hours_end = hour;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let settings = ui.settings.borrow();
+    ui.week
+        .set_display_zone(week::display_zone(settings.timezone.as_deref()));
+    ui.week.set_secondary_zone(
+        settings
+            .secondary_timezone
+            .as_deref()
+            .and_then(|name| name.parse().ok()),
+    );
+    ui.week.set_core_hours(vertical::Core {
+        start: settings.core_hours_start,
+        end: settings.core_hours_end,
+    });
+    drop(settings);
+    refresh_week(ui);
 }
 
 fn toggle_window(ui: &Rc<Ui>) {
@@ -1220,6 +1294,7 @@ fn refresh_week(ui: &Rc<Ui>) {
             ));
             let secondary = ui
                 .settings
+                .borrow()
                 .secondary_timezone
                 .as_deref()
                 .and_then(|name| name.parse().ok());
@@ -1272,7 +1347,7 @@ fn collect_items(ui: &Rc<Ui>, from: i64, to: i64) -> anyhow::Result<Vec<week::It
                 occurrence.event.reminder_minutes,
                 calendar.notify_lead_minutes,
                 account.notify_lead_minutes,
-                ui.settings.lead_minutes,
+                ui.settings.borrow().lead_minutes,
             );
             Some(week::Item {
                 summary: if occurrence.event.summary.is_empty() {

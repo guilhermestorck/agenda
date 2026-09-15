@@ -175,6 +175,53 @@ pub fn set_view_state(path: &Path, key: &str, value: &str) -> Result<()> {
     std::fs::write(path, body).with_context(|| format!("could not write {}", path.display()))
 }
 
+/// Write one key into `settings.toml`, leaving everything else exactly as the user left it.
+///
+/// Line-oriented on purpose. This file is hand-written: it may carry comments, blank lines
+/// and an order its author cared about, and rewriting it from a parsed map would silently
+/// throw all of that away. An existing key is replaced where it stands; a new one is
+/// appended.
+pub fn set_setting(path: &Path, key: &str, value: Option<&str>) -> Result<()> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let mut lines: Vec<String> = existing.lines().map(str::to_string).collect();
+
+    let assignment = value.map(|value| format!("{key} = \"{value}\""));
+    let mut replaced = false;
+    lines.retain_mut(|line| {
+        let is_key = line
+            .split_once('=')
+            .is_some_and(|(name, _)| name.trim() == key);
+        if !is_key {
+            return true;
+        }
+        match (&assignment, replaced) {
+            // Clearing a setting removes its line rather than writing an empty string,
+            // which would not mean the same thing.
+            (None, _) => false,
+            (Some(_), true) => false,
+            (Some(text), false) => {
+                *line = text.clone();
+                replaced = true;
+                true
+            }
+        }
+    });
+
+    if let (Some(text), false) = (&assignment, replaced) {
+        lines.push(text.clone());
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("could not create {}", parent.display()))?;
+    }
+    let mut body = lines.join("\n");
+    if !body.is_empty() {
+        body.push('\n');
+    }
+    std::fs::write(path, body).with_context(|| format!("could not write {}", path.display()))
+}
+
 /// Which screen edge the Plasma panel — and so the system tray — sits on.
 ///
 /// A popup opened from the tray belongs next to the tray. Assuming the bottom is wrong for
@@ -297,6 +344,113 @@ fn unquote(raw: &str) -> Result<String> {
         .find(quote)
         .with_context(|| format!("unterminated quote in: {raw}"))?;
     Ok(rest[..end].to_string())
+}
+
+#[cfg(test)]
+mod settings_writer_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("agenda-set-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("settings.toml")
+    }
+
+    #[test]
+    fn a_comment_the_user_wrote_survives_a_write() {
+        // The whole reason this is line-oriented rather than a parsed round trip.
+        let path = scratch("comments");
+        std::fs::write(
+            &path,
+            "# ten minutes is plenty\nnotify_lead_minutes = \"10\"\n\n# morning person\ncore_hours_start = \"7\"\n",
+        )
+        .unwrap();
+
+        set_setting(&path, "timezone", Some("Asia/Tokyo")).unwrap();
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("# ten minutes is plenty"), "{after}");
+        assert!(after.contains("# morning person"), "{after}");
+        assert!(after.contains("timezone = \"Asia/Tokyo\""), "{after}");
+        assert!(after.contains("core_hours_start = \"7\""), "{after}");
+    }
+
+    #[test]
+    fn an_existing_key_is_replaced_where_it_stands() {
+        let path = scratch("replace");
+        std::fs::write(
+            &path,
+            "timezone = \"Europe/Madrid\"\nnotify_lead_minutes = \"10\"\n",
+        )
+        .unwrap();
+
+        set_setting(&path, "timezone", Some("America/New_York")).unwrap();
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after.lines().count(),
+            2,
+            "a line was added rather than replaced: {after}"
+        );
+        assert!(
+            after.starts_with("timezone = \"America/New_York\""),
+            "{after}"
+        );
+    }
+
+    #[test]
+    fn clearing_a_setting_removes_its_line() {
+        // Not an empty string: absent and blank do not mean the same thing to the parser.
+        let path = scratch("clear");
+        std::fs::write(
+            &path,
+            "secondary_timezone = \"Asia/Tokyo\"\nnotify_lead_minutes = \"10\"\n",
+        )
+        .unwrap();
+
+        set_setting(&path, "secondary_timezone", None).unwrap();
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(!after.contains("secondary_timezone"), "{after}");
+        assert!(after.contains("notify_lead_minutes"), "{after}");
+    }
+
+    #[test]
+    fn a_duplicated_key_collapses_to_one() {
+        let path = scratch("dupes");
+        std::fs::write(&path, "timezone = \"A\"\ntimezone = \"B\"\n").unwrap();
+        set_setting(&path, "timezone", Some("C")).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after, "timezone = \"C\"\n", "{after}");
+    }
+
+    #[test]
+    fn writing_to_a_file_that_does_not_exist_yet_creates_it() {
+        let path = scratch("fresh");
+        let _ = std::fs::remove_file(&path);
+        set_setting(&path, "timezone", Some("UTC")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "timezone = \"UTC\"\n"
+        );
+    }
+
+    #[test]
+    fn what_is_written_is_what_the_parser_reads_back() {
+        let path = scratch("roundtrip");
+        set_setting(&path, "timezone", Some("Asia/Tokyo")).unwrap();
+        set_setting(&path, "secondary_timezone", Some("America/Sao_Paulo")).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let pairs = parse_pairs(&text).unwrap();
+        assert_eq!(
+            pairs.get("timezone").map(String::as_str),
+            Some("Asia/Tokyo")
+        );
+        assert_eq!(
+            pairs.get("secondary_timezone").map(String::as_str),
+            Some("America/Sao_Paulo")
+        );
+    }
 }
 
 #[cfg(test)]
