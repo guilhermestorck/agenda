@@ -6,6 +6,7 @@
 use adw::prelude::*;
 use chrono::Timelike;
 use gtk::glib;
+use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
 /// Minutes in a day.
 const DAY: f64 = 24.0 * 60.0;
@@ -81,6 +82,20 @@ impl Popup {
             .content(&toolbar)
             .build();
 
+        // A Wayland client cannot position its own window, so KWin centred this one. Layer
+        // shell is the protocol that lets it anchor instead; KWin advertises
+        // zwlr_layer_shell_v1 v5. Must run before the window is realised.
+        window.init_layer_shell();
+        window.set_layer(Layer::Top);
+        // Anchored to the corner the system tray lives in, rather than floating mid-screen.
+        window.set_anchor(Edge::Bottom, true);
+        window.set_anchor(Edge::Right, true);
+        window.set_margin(Edge::Bottom, 8);
+        window.set_margin(Edge::Right, 8);
+        // OnDemand rather than Exclusive: the popup needs Escape, but taking the keyboard
+        // outright would steal it from whatever the user was typing in.
+        window.set_keyboard_mode(KeyboardMode::OnDemand);
+
         let popup = std::rc::Rc::new(Self {
             window,
             grid,
@@ -117,6 +132,22 @@ impl Popup {
             glib::Propagation::Proceed
         });
         popup.window.add_controller(controller);
+
+        // Dismiss on focus loss, which is what makes it feel like a panel popup rather than
+        // a window. Layer shell does not do this for us.
+        //
+        // Only after it has actually held focus once. `is-active` notifies false on the way
+        // up, before the compositor has given it focus at all, and acting on that hides the
+        // window in the same breath as showing it.
+        let had_focus = std::rc::Rc::new(std::cell::Cell::new(false));
+        popup.window.connect_is_active_notify(move |window| {
+            if window.is_active() {
+                had_focus.set(true);
+            } else if had_focus.get() && window.is_visible() {
+                had_focus.set(false);
+                window.set_visible(false);
+            }
+        });
 
         popup
     }

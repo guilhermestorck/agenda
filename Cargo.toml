@@ -11,6 +11,7 @@ chrono = "0.4.45"
 chrono-tz = "0.10.4"
 getrandom = "0.4.3"
 gtk = { version = "0.11.4", package = "gtk4", features = ["v4_10", "v4_12"] }
+gtk4-layer-shell = "0.8"
 ksni = { version = "0.3.6", features = ["blocking", "tokio"] }
 notify-rust = "4.18.0"
 oo7 = { version = "0.6.0", features = ["tokio", "native_crypto"] }
