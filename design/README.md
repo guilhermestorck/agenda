@@ -8,10 +8,24 @@ view-only sidebar, the span switcher, compressed quiet hours, the reminder lead-
 
 ## Round trip
 
+Penpot's MCP server is registered in `.mcp.json` and the screens are built into a connected
+file as **native boards and shapes** — selectable and editable, not a flat imported image.
+
 1. Penpot runs from `~/workspace/personal/penpot` — `docker compose up -d`, then
-   http://localhost:9001. **It has no account yet**; registering one is yours to do, since
-   it means choosing a password.
-2. In a project, **Import** each SVG. Penpot turns them into editable shapes rather than a
+   http://localhost:9001.
+2. Open the design file and connect it to the MCP server with the Penpot MCP plugin.
+3. `python3 scripts/penpot-push.py` rebuilds the five boards from `design/screens.json`.
+   Re-runnable: boards are replaced by name rather than piling up.
+4. Edit by hand in Penpot.
+5. Say so, and the edited boards are read back through the same MCP connection.
+
+`design/screens.json` and the SVGs both come from `scripts/make-design.py`, so the two
+renderings cannot drift: change the description, regenerate, push.
+
+### The older SVG route
+
+
+Still available if you prefer it: in a project, **Import** each SVG. Penpot turns them into editable shapes rather than a
    flat image.
 3. Edit by hand.
 4. Export the board back to SVG into this directory, keeping the file name, and say so —

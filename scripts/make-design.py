@@ -31,13 +31,35 @@ ACCOUNTS = [
 def esc(text):
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-def rect(x, y, w, h, fill, rx=0, stroke=None):
-    s = f' stroke="{stroke}"' if stroke else ""
-    return f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{rx}" fill="{fill}"{s}/>'
+def rect(x, y, w, h, fill, rx=0, stroke=None, opacity=1.0):
+    return {"kind": "rect", "x": x, "y": y, "w": w, "h": h,
+            "fill": fill, "rx": rx, "stroke": stroke, "opacity": opacity}
 
 def text(x, y, body, fill=TEXT, size=12, weight=400, anchor="start"):
-    return (f'<text x="{x}" y="{y}" fill="{fill}" font-family="Noto Sans, sans-serif" '
-            f'font-size="{size}" font-weight="{weight}" text-anchor="{anchor}">{esc(body)}</text>')
+    return {"kind": "text", "x": x, "y": y, "body": body,
+            "fill": fill, "size": size, "weight": weight, "anchor": anchor}
+
+def line(x1, y1, x2, y2, stroke=LINE):
+    """A hairline. A rect one pixel thick, so both renderers can draw it."""
+    horizontal = y1 == y2
+    return rect(x1, y1, (x2 - x1) if horizontal else 1, 1 if horizontal else (y2 - y1), stroke)
+
+def circle(cx, cy, r, fill):
+    return {"kind": "ellipse", "x": cx - r, "y": cy - r, "w": r * 2, "h": r * 2, "fill": fill}
+
+def to_svg(item):
+    if item["kind"] == "ellipse":
+        return (f'<ellipse cx="{item["x"] + item["w"] / 2}" cy="{item["y"] + item["h"] / 2}" '
+                f'rx="{item["w"] / 2}" ry="{item["h"] / 2}" fill="{item["fill"]}"/>')
+    if item["kind"] == "rect":
+        stroke = f' stroke="{item["stroke"]}"' if item["stroke"] else ""
+        opacity = "" if item["opacity"] == 1.0 else f' opacity="{item["opacity"]}"'
+        return (f'<rect x="{item["x"]}" y="{item["y"]}" width="{item["w"]}" '
+                f'height="{item["h"]}" rx="{item["rx"]}" fill="{item["fill"]}"{stroke}{opacity}/>')
+    return (f'<text x="{item["x"]}" y="{item["y"]}" fill="{item["fill"]}" '
+            f'font-family="Noto Sans, sans-serif" font-size="{item["size"]}" '
+            f'font-weight="{item["weight"]}" text-anchor="{item["anchor"]}">'
+            f'{esc(item["body"])}</text>')
 
 def chrome(title, span_label="Week"):
     """Header bar shared by every main view."""
@@ -62,7 +84,7 @@ def sidebar(hidden_calendar=None):
     y = HEADER_H + 40
     for name, color, initial, calendars in ACCOUNTS:
         out.append(rect(20, y - 11, 14, 14, color, 3))
-        out.append(f'<circle cx="52" cy="{y - 4}" r="11" fill="{color}"/>')
+        out.append(circle(52, y - 4, 11, color))
         out.append(text(52, y, initial, "#ffffff", 11, 500, "middle"))
         out.append(text(72, y, name, TEXT, 13, 500))
         out.append(text(252, y, "\U0001f441", DIM, 12))
@@ -89,7 +111,7 @@ def week_view():
         x = grid_x + index * col
         out.append(text(x + col / 2, HEADER_H + 26, day.split()[0], ACCENT if index == 1 else TEXT, 12, 500, "middle"))
         out.append(text(x + col / 2, HEADER_H + 42, day.split()[1] + " Sep", DIM, 10, 400, "middle"))
-        out.append(f'<line x1="{x}" y1="{HEADER_H + 54}" x2="{x}" y2="{H}" stroke="{LINE}"/>')
+        out.append(line(x, HEADER_H + 54, x, H))
     out.append(rect(SIDEBAR, HEADER_H + 54, W - SIDEBAR, 44, BG))
     out.append(rect(grid_x + 4, HEADER_H + 62, col - 8, 16, "#3584e4", 3))
     out.append(text(grid_x + 10, HEADER_H + 74, "Fiesta local", "#ffffff", 9))
@@ -99,7 +121,7 @@ def week_view():
     for hour in range(7, 20):
         tall = 8 <= hour < 22
         height = 40 if tall else 20
-        out.append(f'<line x1="{SIDEBAR}" y1="{y}" x2="{W}" y2="{y}" stroke="{LINE}"/>')
+        out.append(line(SIDEBAR, y, W, y))
         out.append(text(SIDEBAR + 44, y + 12, f"{hour:02}:00", DIM, 10, 400, "end"))
         y += height
     events = [(0, 150, 34, "Sprint planning", "#e66100"), (1, 120, 26, "Design review", "#e66100"),
@@ -108,7 +130,7 @@ def week_view():
     for day_index, offset, height, label, color in events:
         x = grid_x + day_index * col + 3
         top = HEADER_H + 110 + offset
-        out.append(rect(x, top - 10, col - 8, 10, color, 3) .replace('fill="', 'opacity="0.28" fill="'))
+        out.append(rect(x, top - 10, col - 8, 10, color, 3, opacity=0.28))
         out.append(rect(x, top, col - 8, height, color, 3))
         out.append(text(x + 6, top + 13, label, "#ffffff", 10))
     return out
@@ -123,7 +145,7 @@ def month_view():
     number = 31
     for week in range(6):
         top = HEADER_H + 30 + week * row_h
-        out.append(f'<line x1="{grid_x}" y1="{top}" x2="{W}" y2="{top}" stroke="{LINE}"/>')
+        out.append(line(grid_x, top, W, top))
         for day in range(7):
             x = grid_x + day * col
             outside = week == 0 and day == 0
@@ -192,9 +214,12 @@ def preferences(page):
         y += 26
     return out, w, h
 
+SCREENS = {}
+
 def write(name, body, width=W, height=H):
+    SCREENS[name] = {"width": width, "height": height, "items": body}
     svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-           f'viewBox="0 0 {width} {height}">' + "".join(body) + "</svg>")
+           f'viewBox="0 0 {width} {height}">' + "".join(to_svg(item) for item in body) + "</svg>")
     path = OUT / f"{name}.svg"
     path.write_text(svg)
     print(f"  {path.relative_to(OUT.parent)}  ({len(svg)} bytes)")
@@ -208,3 +233,8 @@ body, w, h = preferences("settings")
 write("04-preferences-settings", body, w, h)
 body, w, h = preferences("accounts")
 write("05-preferences-accounts", body, w, h)
+
+# The same screens as a scene description, for the Penpot renderer to build natively.
+import json
+(OUT / "screens.json").write_text(json.dumps(SCREENS, indent=1))
+print(f"  design/screens.json  ({len(SCREENS)} screens)")
