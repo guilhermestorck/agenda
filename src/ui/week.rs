@@ -169,24 +169,38 @@ impl Week {
 
         // The hour axis stays put while the day columns scroll sideways, so it keeps
         // labelling the rows it is next to. Only the columns go in the horizontal scroller.
+        // The columns scroll in both directions. Vertical scrolling has to live here rather
+        // than in an outer scroller: nested the other way round, the horizontal scrollbar
+        // ends up pinned to the bottom of a full day's height and is never on screen.
         let column_scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
-            .vscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
             .hexpand(true)
             .vexpand(true)
             .child(&columns_box)
             .build();
+        // A scrollbar nobody can see is not an affordance. KDE's overlay scrollbars fade out
+        // until the pointer is already moving, which leaves a clipped grid looking broken
+        // rather than scrollable, so this one keeps its place in the layout.
+        column_scroller.set_overlay_scrolling(false);
+
+        // The hour axis scrolls vertically with the rows it labels and not horizontally with
+        // the days, so it stays put when the grid slides sideways.
+        let axis_box = gtk::Box::new(Orientation::Horizontal, 0);
+        axis_box.append(&secondary_axis);
+        axis_box.append(&axis);
+        let axis_scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::External)
+            .vadjustment(&column_scroller.vadjustment())
+            .child(&axis_box)
+            .build();
 
         let scrollable = gtk::Box::new(Orientation::Horizontal, 0);
-        scrollable.append(&secondary_axis);
-        scrollable.append(&axis);
+        scrollable.append(&axis_scroller);
         scrollable.append(&column_scroller);
 
-        let scroller = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vexpand(true)
-            .child(&scrollable)
-            .build();
+        let scroller = column_scroller.clone();
 
         // The day headings and the all-day band ride the same horizontal adjustment as the
         // columns below them. Previously they sat outside the scrolled area entirely and
@@ -234,11 +248,13 @@ impl Week {
         all_day_line.append(&all_day_scroller);
 
         let root = gtk::Box::new(Orientation::Vertical, 0);
+        let body = scrollable;
+        body.set_vexpand(true);
         root.append(&header_line);
         root.append(&gtk::Separator::new(Orientation::Horizontal));
         root.append(&all_day_line);
         root.append(&gtk::Separator::new(Orientation::Horizontal));
-        root.append(&scroller);
+        root.append(&body);
 
         let palette = gtk::CssProvider::new();
         if let Some(display) = gtk::gdk::Display::default() {

@@ -87,11 +87,19 @@ impl Popup {
         // zwlr_layer_shell_v1 v5. Must run before the window is realised.
         window.init_layer_shell();
         window.set_layer(Layer::Top);
-        // Anchored to the corner the system tray lives in, rather than floating mid-screen.
-        window.set_anchor(Edge::Bottom, true);
-        window.set_anchor(Edge::Right, true);
-        window.set_margin(Edge::Bottom, 8);
-        window.set_margin(Edge::Right, 8);
+        // Anchored beside the panel the tray lives in. Which edge that is comes from
+        // Plasma's own config: assuming the bottom is wrong for anyone whose panel is
+        // somewhere else, and on KDE that is a matter of taste rather than an edge case.
+        let (first, second) = match crate::config::panel_edge() {
+            crate::config::PanelEdge::Bottom => (Edge::Bottom, Edge::Right),
+            crate::config::PanelEdge::Top => (Edge::Top, Edge::Right),
+            crate::config::PanelEdge::Left => (Edge::Left, Edge::Bottom),
+            crate::config::PanelEdge::Right => (Edge::Right, Edge::Bottom),
+        };
+        window.set_anchor(first, true);
+        window.set_anchor(second, true);
+        window.set_margin(first, 8);
+        window.set_margin(second, 8);
         // OnDemand rather than Exclusive: the popup needs Escape, but taking the keyboard
         // outright would steal it from whatever the user was typing in.
         window.set_keyboard_mode(KeyboardMode::OnDemand);

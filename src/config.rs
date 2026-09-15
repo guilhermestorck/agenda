@@ -175,6 +175,81 @@ pub fn set_view_state(path: &Path, key: &str, value: &str) -> Result<()> {
     std::fs::write(path, body).with_context(|| format!("could not write {}", path.display()))
 }
 
+/// Which screen edge the Plasma panel — and so the system tray — sits on.
+///
+/// A popup opened from the tray belongs next to the tray. Assuming the bottom is wrong for
+/// anyone whose panel is anywhere else, which on KDE is a matter of taste rather than an
+/// edge case.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub enum PanelEdge {
+    Top,
+    #[default]
+    Bottom,
+    Left,
+    Right,
+}
+
+/// Plasma's `Plasma::Types::Location`, as written into the applets config.
+fn edge_of_location(location: &str) -> Option<PanelEdge> {
+    match location.trim() {
+        "3" => Some(PanelEdge::Top),
+        "4" => Some(PanelEdge::Bottom),
+        "5" => Some(PanelEdge::Left),
+        "6" => Some(PanelEdge::Right),
+        _ => None,
+    }
+}
+
+/// Read the panel's edge out of Plasma's applets config.
+///
+/// Sections are `[Containments][N]`; the one that is a panel carries
+/// `plugin=org.kde.panel`, and its `location` is the edge. Keys appear either side of the
+/// plugin line, so the section is collected before being judged.
+pub fn panel_edge_from(text: &str) -> PanelEdge {
+    let mut section_is_panel = false;
+    let mut section_location: Option<PanelEdge> = None;
+    let mut found: Option<PanelEdge> = None;
+
+    for line in text.lines().chain(std::iter::once("[")) {
+        if line.starts_with('[') {
+            if let (true, Some(edge)) = (section_is_panel, section_location) {
+                found = Some(edge);
+                break;
+            }
+            section_is_panel = false;
+            section_location = None;
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("plugin=") {
+            if value.trim() == "org.kde.panel" {
+                section_is_panel = true;
+            }
+        } else if let Some(value) = line.strip_prefix("location=") {
+            section_location = edge_of_location(value);
+        }
+    }
+
+    found.unwrap_or_default()
+}
+
+/// The panel's edge on this machine, falling back to the bottom when Plasma's config cannot
+/// be read — a wrong guess costs placement, not function.
+pub fn panel_edge() -> PanelEdge {
+    let Ok(home) = std::env::var("HOME") else {
+        return PanelEdge::default();
+    };
+    let path = PathBuf::from(home)
+        .join(".config")
+        .join("plasma-org.kde.plasma.desktop-appletsrc");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => panel_edge_from(&text),
+        Err(_) => {
+            tracing::debug!(path = %path.display(), "no Plasma panel config; assuming the bottom");
+            PanelEdge::default()
+        }
+    }
+}
+
 pub fn parse_pairs(text: &str) -> Result<std::collections::HashMap<String, String>> {
     let mut pairs = std::collections::HashMap::new();
     for line in text.lines() {
@@ -222,6 +297,72 @@ fn unquote(raw: &str) -> Result<String> {
         .find(quote)
         .with_context(|| format!("unterminated quote in: {raw}"))?;
     Ok(rest[..end].to_string())
+}
+
+#[cfg(test)]
+mod panel_edge_tests {
+    use super::*;
+
+    /// Shaped like the real file: a desktop containment carrying location=0 comes first, and
+    /// the panel's own keys straddle its plugin line.
+    const SAMPLE: &str = "\
+[Containments][1]
+activityId=abc
+location=4
+plugin=org.kde.desktopcontainment
+
+[Containments][95]
+formfactor=3
+location=5
+plugin=org.kde.panel
+
+[Containments][95][Applets][102]
+plugin=org.kde.plasma.systemtray
+";
+
+    #[test]
+    fn the_panels_edge_is_read_and_the_desktops_is_not() {
+        // The desktop containment carries a perfectly valid edge location of its own and
+        // comes first; only the panel's counts.
+        assert_eq!(panel_edge_from(SAMPLE), PanelEdge::Left);
+    }
+
+    #[test]
+    fn every_edge_maps_to_its_plasma_location() {
+        for (location, expected) in [
+            ("3", PanelEdge::Top),
+            ("4", PanelEdge::Bottom),
+            ("5", PanelEdge::Left),
+            ("6", PanelEdge::Right),
+        ] {
+            let text = format!("[Containments][2]\nplugin=org.kde.panel\nlocation={location}\n");
+            assert_eq!(panel_edge_from(&text), expected, "location={location}");
+        }
+    }
+
+    #[test]
+    fn a_location_written_before_the_plugin_line_is_still_found() {
+        let text = "[Containments][2]\nlocation=6\nplugin=org.kde.panel\n";
+        assert_eq!(panel_edge_from(text), PanelEdge::Right);
+    }
+
+    #[test]
+    fn a_config_with_no_panel_falls_back_to_the_bottom() {
+        // Costs placement, not function.
+        assert_eq!(
+            panel_edge_from("[Containments][1]\nplugin=org.kde.desktopcontainment\nlocation=0\n"),
+            PanelEdge::Bottom
+        );
+        assert_eq!(panel_edge_from(""), PanelEdge::Bottom);
+    }
+
+    #[test]
+    fn an_unknown_location_is_not_mistaken_for_an_edge() {
+        assert_eq!(
+            panel_edge_from("[Containments][2]\nplugin=org.kde.panel\nlocation=0\n"),
+            PanelEdge::Bottom
+        );
+    }
 }
 
 #[cfg(test)]
