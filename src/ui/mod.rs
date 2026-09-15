@@ -48,6 +48,8 @@ struct Ui {
     rail: gtk::Box,
     /// Which of the two the sidebar is currently showing.
     sidebar_stack: gtk::Stack,
+    /// Border colours for the account and calendar cards, rebuilt with the sidebar.
+    sidebar_palette: gtk::CssProvider,
     toasts: adw::ToastOverlay,
     connect_button: gtk::Button,
     week: Rc<week::Week>,
@@ -137,6 +139,7 @@ fn startup(window: &adw::ApplicationWindow) -> anyhow::Result<gtk::Widget> {
         sidebar: gtk::Box::new(Orientation::Vertical, 0),
         rail: gtk::Box::new(Orientation::Vertical, 6),
         sidebar_stack: gtk::Stack::new(),
+        sidebar_palette: gtk::CssProvider::new(),
         toasts: adw::ToastOverlay::new(),
         connect_button: gtk::Button::with_label("Connect account"),
         sync_button: gtk::Button::from_icon_name("view-refresh-symbolic"),
@@ -327,6 +330,14 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     ui.rail.set_margin_top(6);
     ui.rail.set_margin_bottom(6);
     ui.rail.set_halign(Align::Center);
+
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &ui.sidebar_palette,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
 
     ui.sidebar_stack.add_named(&sidebar_scroll, Some("full"));
     ui.sidebar_stack.add_named(&rail_scroll, Some("rail"));
@@ -746,15 +757,48 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         ui.rail.append(&button);
     }
 
+    // One border colour per card. Generated rather than fixed, because the colours are the
+    // user's and change under us.
+    let mut css = String::new();
+    for (account, calendars) in &groups {
+        for color in std::iter::once(account.color.as_deref().unwrap_or(DEFAULT_SWATCH)).chain(
+            calendars.iter().map(|calendar| {
+                calendar
+                    .user_color
+                    .as_deref()
+                    .or(calendar.color.as_deref())
+                    .or(account.color.as_deref())
+                    .unwrap_or(DEFAULT_SWATCH)
+            }),
+        ) {
+            css.push_str(&format!(
+                ".card-{} {{ border: 1px solid {color}; border-radius: 8px; padding: 4px 2px; }}\n",
+                crate::ui::week::class_for(color)
+            ));
+        }
+    }
+    ui.sidebar_palette.load_from_string(&css);
+
     for (account, calendars) in groups {
         let group = gtk::Box::new(Orientation::Vertical, 0);
         group.set_margin_bottom(10);
+        // The account's block is a card outlined in its own colour, so where one account
+        // ends and the next begins is visible rather than inferred from whitespace.
+        group.add_css_class(&format!(
+            "card-{}",
+            crate::ui::week::class_for(account.color.as_deref().unwrap_or(DEFAULT_SWATCH))
+        ));
+        group.set_margin_start(8);
+        group.set_margin_end(8);
+        group.set_margin_top(4);
 
         let heading = gtk::Box::new(Orientation::Horizontal, 8);
         heading.set_margin_start(12);
         heading.set_margin_end(12);
         heading.set_margin_top(6);
-        heading.append(&swatch(account.color.as_deref()));
+        // No separate colour chip: the card's border already carries the account's colour,
+        // and the avatar carries who it is — a picture when one has been fetched, initials
+        // otherwise. Two marks for one account was one too many.
         heading.append(&avatar_for(&account, 24));
 
         let name = gtk::Label::new(Some(
@@ -796,30 +840,43 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         group.append(&heading);
 
         if ui.needs_reconnect.borrow().contains(&account.email) {
-            // Read-only: a label, not a button. Fixing it lives in Preferences now, but the
-            // user still has to be able to see that an account is broken without going
-            // looking — §2.11.
-            let broken = gtk::Label::new(Some("Needs reconnecting"));
-            broken.add_css_class("caption");
+            // An icon beside the name rather than a line of its own: the state is about this
+            // account, and a whole row of red for it crowded the sidebar. Read-only — fixing
+            // it lives in Preferences — but still visible without going looking (§2.11).
+            // network-offline-symbolic rather than the wireless variant: it is the one
+            // present in both Adwaita and Breeze, and this machine's GTK theme is Breeze,
+            // where the Adwaita name resolves to a missing-image glyph instead.
+            let broken = gtk::Image::from_icon_name("network-offline-symbolic");
             broken.add_css_class("error");
-            broken.set_halign(Align::Start);
-            broken.set_margin_start(44);
-            broken.set_margin_end(12);
-            group.append(&broken);
+            broken.set_tooltip_text(Some(&format!(
+                "{} needs reconnecting — Preferences → Accounts",
+                account.email
+            )));
+            heading.append(&broken);
         }
 
         for calendar in calendars {
             let row = gtk::Box::new(Orientation::Horizontal, 8);
-            row.set_margin_start(20);
-            row.set_margin_end(12);
+            row.set_margin_start(12);
+            row.set_margin_end(8);
             row.set_margin_top(4);
-            row.append(&swatch(
-                calendar
-                    .user_color
-                    .as_deref()
-                    .or(calendar.color.as_deref())
-                    .or(account.color.as_deref()),
-            ));
+
+            let own = calendar
+                .user_color
+                .as_deref()
+                .or(calendar.color.as_deref())
+                .unwrap_or(DEFAULT_SWATCH);
+            let inherited = account.color.as_deref().unwrap_or(DEFAULT_SWATCH);
+
+            // A calendar that keeps its account's colour needs no outline: the account's
+            // card already says what colour its events are. One that has its own does,
+            // because otherwise nothing on the row explains why its events look different.
+            if !own.eq_ignore_ascii_case(inherited) {
+                row.add_css_class(&format!("card-{}", crate::ui::week::class_for(own)));
+                row.set_margin_start(16);
+                row.set_margin_top(6);
+            }
+            row.append(&swatch(Some(own)));
 
             let label = gtk::Label::new(Some(&calendar.summary));
             label.set_halign(Align::Start);
@@ -854,6 +911,9 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         ui.sidebar.append(&group);
     }
 }
+
+/// The colour a card falls back to when neither the calendar nor its account has one.
+const DEFAULT_SWATCH: &str = "#3584e4";
 
 /// A read-only colour chip. The sidebar shows which colour a calendar is; changing it is
 /// Preferences' business.

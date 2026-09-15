@@ -691,7 +691,7 @@ fn band_widget(fill: &str) -> gtk::DrawingArea {
 }
 
 /// A CSS class name for a colour. Hex digits only, because a class cannot contain a '#'.
-fn class_for(color: &str) -> String {
+pub fn class_for(color: &str) -> String {
     let sanitised: String = color
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
