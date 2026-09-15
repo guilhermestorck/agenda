@@ -428,6 +428,18 @@ implying coverage that does not exist.
 - **Database schema.** The schema in §4 needs sign-off before it is written, and any change
   to it afterwards needs sign-off again. Once real synced calendars exist, a bad migration
   costs a full resync at best.
+- **Any screenshot at all, and the moment one turns out to be the wrong window, stop.**
+  Not "shred it and carry on", which is what happened four times: shred it, say so
+  immediately, and **wait for explicit approval before doing anything else**. The task does
+  not continue in the same breath. Added 2026-09-15 at the user's instruction, after a
+  Slack thread, a Zoom call with colleagues on camera, and twice their Claude window were
+  captured and passed through the transcript — each time followed by carrying straight on.
+- **Note what the guard is not.** `spectacle` cannot capture a named window: its options are
+  the whole desktop, the current monitor, the active window, or the one under the cursor.
+  `scripts/shot-agenda.sh` therefore *checks* which window is focused and then captures
+  whatever is active — two separate questions to KWin, and focus can move between them. It
+  narrows the odds; it does not target a window. Anything that must not be captured is not
+  protected by it.
 - **Any screenshot taken by a command that captures "the active window" or the whole
   screen.** Use `scripts/shot-agenda.sh`, which asks KWin what is focused and refuses unless
   it is agenda. Added 2026-09-14 after `spectacle -a` captured the user's private Slack

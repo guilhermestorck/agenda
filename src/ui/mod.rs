@@ -843,10 +843,10 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
             // An icon beside the name rather than a line of its own: the state is about this
             // account, and a whole row of red for it crowded the sidebar. Read-only — fixing
             // it lives in Preferences — but still visible without going looking (§2.11).
-            // network-offline-symbolic rather than the wireless variant: it is the one
-            // present in both Adwaita and Breeze, and this machine's GTK theme is Breeze,
-            // where the Adwaita name resolves to a missing-image glyph instead.
-            let broken = gtk::Image::from_icon_name("network-offline-symbolic");
+            // A storm cloud, chosen by the user over the literal network-offline glyph.
+            // Present in both Adwaita and Breeze, which is the bar an icon has to clear
+            // here: an Adwaita-only name renders as a missing-image box under Breeze.
+            let broken = gtk::Image::from_icon_name("weather-storm-symbolic");
             broken.add_css_class("error");
             broken.set_tooltip_text(Some(&format!(
                 "{} needs reconnecting — Preferences → Accounts",
