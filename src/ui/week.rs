@@ -340,13 +340,24 @@ impl Week {
                     core,
                 ) - top;
                 let slot = column_width / of as f64;
+                let x = day as f64 * column_width + column as f64 * slot + 1.0;
+
+                // The reminder band, behind the event. A segment continuing from the
+                // previous day starts at midnight, and `band` returns nothing there — so a
+                // meeting running past midnight is not reminded about twice, without
+                // needing to ask which day it began on.
+                if let Some((band_top, band_height)) = item
+                    .lead_minutes
+                    .and_then(|lead| vertical::band(segment.top_minutes, lead, &occupied, core))
+                {
+                    let band = band_widget(&item.colors.fill);
+                    band.set_size_request((slot as i32 - 2).max(1), (band_height as i32).max(1));
+                    self.canvas.put(&band, x, band_top);
+                }
+
                 let widget = event_widget(item, height as i32, slot as i32);
                 widget.set_size_request((slot as i32 - 2).max(1), (height as i32 - 1).max(1));
-                self.canvas.put(
-                    &widget,
-                    day as f64 * column_width + column as f64 * slot + 1.0,
-                    top,
-                );
+                self.canvas.put(&widget, x, top);
             }
         }
     }
@@ -507,6 +518,36 @@ fn title_for(start: NaiveDate, days: usize) -> String {
             end.format("%-d %b %Y")
         )
     }
+}
+
+/// The translucent run-up to an event, from when its reminder fires to when it starts.
+///
+/// Fades out backwards, toward the reminder: strongest where the event begins, vanishing at
+/// the moment the user will be told. That is the direction the user described — the colour
+/// fading away until the notification time — and it reads as the event casting a shadow
+/// forwards rather than a second block sitting above it.
+fn band_widget(fill: &str) -> gtk::DrawingArea {
+    let band = gtk::DrawingArea::new();
+    let fill = fill.to_string();
+    band.set_can_target(false);
+    band.set_draw_func(move |_, context, width, height| {
+        let Ok(rgba) = gtk::gdk::RGBA::parse(&fill) else {
+            return;
+        };
+        let (r, g, b) = (
+            f64::from(rgba.red()),
+            f64::from(rgba.green()),
+            f64::from(rgba.blue()),
+        );
+        let gradient = gtk::cairo::LinearGradient::new(0.0, 0.0, 0.0, f64::from(height));
+        gradient.add_color_stop_rgba(0.0, r, g, b, 0.0);
+        gradient.add_color_stop_rgba(1.0, r, g, b, 0.28);
+        if context.set_source(&gradient).is_ok() {
+            context.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
+            let _ = context.fill();
+        }
+    });
+    band
 }
 
 /// A CSS class name for a colour. Hex digits only, because a class cannot contain a '#'.
