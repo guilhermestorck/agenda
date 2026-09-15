@@ -191,6 +191,13 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     ui.sync_button.connect_clicked(move |_| sync_now(&clicked));
     header.pack_start(&ui.sync_button);
 
+    // Next to sync, and opening Preferences directly. A menu whose only entry worth having
+    // was "Preferences…" was a click in the way of a button.
+    let cog = gtk::Button::from_icon_name("emblem-system-symbolic");
+    cog.add_css_class("flat");
+    cog.set_tooltip_text(Some("Preferences"));
+    header.pack_start(&cog);
+
     let navigation = gtk::Box::new(Orientation::Horizontal, 0);
     navigation.add_css_class("linked");
     let previous = gtk::Button::from_icon_name("go-previous-symbolic");
@@ -309,11 +316,6 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     ui.sidebar_stack.add_named(&rail_scroll, Some("rail"));
     ui.sidebar_stack.set_vexpand(true);
 
-    let kebab = gtk::MenuButton::new();
-    kebab.set_icon_name("open-menu-symbolic");
-    kebab.add_css_class("flat");
-    kebab.set_tooltip_text(Some("Menu"));
-
     // Nothing but the view. Connect account moved to Preferences → Accounts, sync to the
     // header: both act on accounts rather than describing them.
     let sidebar_root = gtk::Box::new(Orientation::Vertical, 0);
@@ -374,33 +376,6 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
         })
     };
 
-    // Preferences live behind the same kebab as the sidebar states: it is the only menu
-    // there is, and a settings file the user has to find and hand-edit is not a control.
-    let open_preferences = gtk::Button::with_label("Preferences…");
-    open_preferences.add_css_class("flat");
-    {
-        let ui = ui.clone();
-        let popover = popover.clone();
-        open_preferences.connect_clicked(move |button| {
-            popover.popdown();
-            let settings = ui.settings.borrow();
-            let applied = ui.clone();
-            let accounts = accounts_page(&ui);
-            let dialog = preferences::dialog(
-                settings.timezone.as_deref(),
-                settings.secondary_timezone.as_deref(),
-                settings.core_hours_start,
-                settings.core_hours_end,
-                &accounts,
-                move |key, value| apply_setting(&applied, key, value),
-            );
-            drop(settings);
-            dialog.present(Some(button));
-        });
-    }
-    choices.append(&gtk::Separator::new(Orientation::Horizontal));
-    choices.append(&open_preferences);
-
     for state in SidebarState::ALL {
         let button = gtk::Button::with_label(state.label());
         button.add_css_class("flat");
@@ -413,8 +388,6 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
         choices.append(&button);
     }
     popover.set_child(Some(&choices));
-    kebab.set_popover(Some(&popover));
-    header.pack_end(&kebab);
 
     // The kebab lives inside the sidebar, so it cannot be the only way back: hiding the
     // sidebar hides its own control, and the user is stuck. This one is in the header.
@@ -443,6 +416,39 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
         .sync_create()
         .build();
     header.pack_start(&reveal);
+
+    {
+        let ui = ui.clone();
+        let apply = apply.clone();
+        cog.connect_clicked(move |button| {
+            let settings = ui.settings.borrow();
+            let applied = ui.clone();
+            let accounts = accounts_page(&ui);
+            let current = crate::config::view_state(&ui.view_state)
+                .get("sidebar")
+                .and_then(|key| SidebarState::from_key(key))
+                .unwrap_or_default();
+            let sidebar_apply = apply.clone();
+            let dialog = preferences::dialog(
+                preferences::Current {
+                    timezone: settings.timezone.as_deref(),
+                    secondary: settings.secondary_timezone.as_deref(),
+                    core_start: settings.core_hours_start,
+                    core_end: settings.core_hours_end,
+                    sidebar_state: current.key(),
+                },
+                &accounts,
+                move |key, value| apply_setting(&applied, key, value),
+                move |key| {
+                    if let Some(state) = SidebarState::from_key(key) {
+                        sidebar_apply(state);
+                    }
+                },
+            );
+            drop(settings);
+            dialog.present(Some(button));
+        });
+    }
 
     apply(
         saved

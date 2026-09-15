@@ -47,13 +47,21 @@ fn zone_row(title: &str, subtitle: &str, current: Option<&str>, optional: bool) 
 }
 
 /// Build the dialog. `on_change` is called with the key and its new value — `None` clears it.
+/// What the dialog should show as current. Grouped rather than passed loose: eight
+/// positional arguments is a call nobody can read at the other end.
+pub struct Current<'a> {
+    pub timezone: Option<&'a str>,
+    pub secondary: Option<&'a str>,
+    pub core_start: u32,
+    pub core_end: u32,
+    pub sidebar_state: &'a str,
+}
+
 pub fn dialog(
-    timezone: Option<&str>,
-    secondary: Option<&str>,
-    core_start: u32,
-    core_end: u32,
+    current: Current<'_>,
     accounts: &adw::PreferencesPage,
     on_change: impl Fn(&str, Option<String>) + Clone + 'static,
+    on_sidebar: impl Fn(&str) + 'static,
 ) -> adw::PreferencesDialog {
     let page = adw::PreferencesPage::new();
     page.set_title("Settings");
@@ -65,13 +73,13 @@ pub fn dialog(
     let primary = zone_row(
         "Display time zone",
         "Where the grid places your events. Defaults to the system's.",
-        timezone,
+        current.timezone,
         false,
     );
     let second = zone_row(
         "Second time zone",
         "Shown beside the hour axis and on agenda rows.",
-        secondary,
+        current.secondary,
         true,
     );
     zones.add(&primary);
@@ -84,15 +92,41 @@ pub fn dialog(
     ));
     let start = adw::SpinRow::with_range(0.0, 23.0, 1.0);
     start.set_title("Day starts");
-    start.set_value(f64::from(core_start));
+    start.set_value(f64::from(current.core_start));
     let end = adw::SpinRow::with_range(1.0, 24.0, 1.0);
     end.set_title("Day ends");
-    end.set_value(f64::from(core_end));
+    end.set_value(f64::from(current.core_end));
     hours.add(&start);
     hours.add(&end);
 
+    // The sidebar has three states and the header button only toggles two of them, so the
+    // third needs naming somewhere. It is a preference, and this is where preferences live.
+    let view = adw::PreferencesGroup::new();
+    view.set_title("Sidebar");
+    let states = [
+        ("expanded", "Accounts and calendars"),
+        ("rail", "Accounts only"),
+        ("hidden", "Hidden"),
+    ];
+    let sidebar = adw::ComboRow::new();
+    sidebar.set_title("Show");
+    sidebar.set_model(Some(&gtk::StringList::new(&states.map(|(_, label)| label))));
+    sidebar.set_selected(
+        states
+            .iter()
+            .position(|(key, _)| *key == current.sidebar_state)
+            .unwrap_or(0) as u32,
+    );
+    sidebar.connect_selected_notify(move |row| {
+        if let Some((key, _)) = states.get(row.selected() as usize) {
+            on_sidebar(key);
+        }
+    });
+    view.add(&sidebar);
+
     page.add(&zones);
     page.add(&hours);
+    page.add(&view);
 
     {
         let on_change = on_change.clone();
