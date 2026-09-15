@@ -229,6 +229,12 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     ui.week.set_span(span);
     ui.week
         .set_display_zone(week::display_zone(ui.settings.timezone.as_deref()));
+    ui.week.set_secondary_zone(
+        ui.settings
+            .secondary_timezone
+            .as_deref()
+            .and_then(|name| name.parse().ok()),
+    );
     ui.week.set_core_hours(vertical::Core {
         start: ui.settings.core_hours_start,
         end: ui.settings.core_hours_end,

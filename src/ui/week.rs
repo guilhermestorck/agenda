@@ -67,6 +67,10 @@ pub struct Week {
     zone: Cell<Tz>,
     /// Hour labels, resized when compression changes rather than rebuilt.
     hours: Vec<gtk::Label>,
+    /// The optional second zone's readings, beside the first.
+    secondary_hours: Vec<gtk::Label>,
+    secondary_axis: gtk::Box,
+    secondary_zone: Rc<Cell<Option<Tz>>>,
     /// Which hours hold an event, across every day on screen. Shared with the draw closure
     /// so the grid lines and the events cannot disagree about where an hour sits.
     occupied: Rc<RefCell<std::collections::BTreeSet<u32>>>,
@@ -113,6 +117,24 @@ impl Week {
         let occupied = Rc::new(RefCell::new(std::collections::BTreeSet::new()));
         let core = Rc::new(Cell::new(Core::default()));
 
+        // Left of the primary axis, so the local time stays adjacent to the grid it
+        // labels and the foreign one reads as an annotation rather than the main clock.
+        let secondary_axis = gtk::Box::new(Orientation::Vertical, 0);
+        secondary_axis.set_size_request(AXIS_WIDTH, -1);
+        secondary_axis.set_visible(false);
+        let mut secondary_hours = Vec::with_capacity(24);
+        for _ in 0..24 {
+            let label = gtk::Label::new(None);
+            label.add_css_class("dim-label");
+            label.add_css_class("caption");
+            label.set_valign(Align::Start);
+            label.set_halign(Align::End);
+            label.set_margin_end(6);
+            label.set_size_request(-1, HOUR_HEIGHT as i32);
+            secondary_axis.append(&label);
+            secondary_hours.push(label);
+        }
+
         let axis = gtk::Box::new(Orientation::Vertical, 0);
         axis.set_size_request(AXIS_WIDTH, -1);
         let mut hours = Vec::with_capacity(24);
@@ -140,6 +162,7 @@ impl Week {
         overlay.add_overlay(&canvas);
 
         let scrollable = gtk::Box::new(Orientation::Horizontal, 0);
+        scrollable.append(&secondary_axis);
         scrollable.append(&axis);
         scrollable.append(&overlay);
 
@@ -192,6 +215,9 @@ impl Week {
             focus,
             span,
             hours,
+            secondary_hours,
+            secondary_axis,
+            secondary_zone: Rc::new(Cell::new(None)),
             occupied,
             core,
             items: RefCell::new(Vec::new()),
@@ -265,11 +291,26 @@ impl Week {
     fn resize_axis(self: &Rc<Self>) {
         let occupied = self.occupied.borrow();
         let core = self.core.get();
-        for (hour, label) in self.hours.iter().enumerate() {
-            label.set_size_request(-1, hour_height(hour as u32, &occupied, core) as i32);
+        for (hour, label) in self
+            .hours
+            .iter()
+            .chain(self.secondary_hours.iter())
+            .enumerate()
+        {
+            // Both columns share one mapping, so the second zone's readings line up with
+            // the rows they annotate even where an hour is compressed.
+            let hour = (hour % 24) as u32;
+            label.set_size_request(-1, hour_height(hour, &occupied, core) as i32);
         }
         self.grid
             .set_content_height(day_height(&occupied, core) as i32);
+    }
+
+    /// Show a second zone's readings beside the hour axis, or none.
+    pub fn set_secondary_zone(self: &Rc<Self>, zone: Option<Tz>) {
+        self.secondary_zone.set(zone);
+        self.secondary_axis.set_visible(zone.is_some());
+        self.refresh();
     }
 
     /// The hours drawn at full height whatever they hold.
@@ -490,6 +531,18 @@ impl Week {
                 label.add_css_class("accent");
             } else {
                 label.remove_css_class("accent");
+            }
+        }
+
+        if let Some(other) = self.secondary_zone.get() {
+            // Recomputed for the displayed day, because the gap between two zones changes
+            // partway through the days when one leaves summer time before the other.
+            for (label, reading) in
+                self.secondary_hours
+                    .iter()
+                    .zip(secondary_hours(start, self.zone.get(), other))
+            {
+                label.set_text(&reading);
             }
         }
 
