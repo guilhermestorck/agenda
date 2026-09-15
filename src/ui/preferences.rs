@@ -29,7 +29,14 @@ fn zone_row(title: &str, subtitle: &str, current: Option<&str>, optional: bool) 
     row.set_title(title);
     row.set_subtitle(subtitle);
     row.set_model(Some(&model));
-    // Six hundred zones is a list nobody scrolls. Typing narrows it.
+    // Six hundred zones is a list nobody scrolls. Typing narrows it — but only with an
+    // expression: enable_search on its own gives a search box with nothing to match
+    // against, which looks like a working search that ignores everything typed into it.
+    row.set_expression(Some(gtk::PropertyExpression::new(
+        gtk::StringObject::static_type(),
+        None::<gtk::Expression>,
+        "string",
+    )));
     row.set_enable_search(true);
 
     let selected = current
