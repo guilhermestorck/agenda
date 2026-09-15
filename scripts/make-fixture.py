@@ -67,20 +67,25 @@ ACCOUNTS = [
 
 CALENDARS = [
     # account, id, summary, google colour, tz, access role, primary, user colour
+    #
+    # Most calendars simply take their account's colour, because that is the common case and
+    # because the sidebar only draws a card around the ones that differ — if everything
+    # differs, the card says nothing. Three are deliberately distinct: one set by Google, one
+    # overridden by the user, and one of each kind on different accounts.
     ("work@example.com", "primary", "Guilherme (work)", "#e66100", "Europe/Madrid", "owner", 1, None),
-    ("work@example.com", "team-platform", "Team platform", "#c64600", "Europe/Madrid", "writer", 0, None),
+    ("work@example.com", "team-platform", "Team platform", "#e66100", "Europe/Madrid", "writer", 0, None),
     ("work@example.com", "oncall", "On-call rota", "#b5835a", "UTC", "reader", 0, "#f66151"),
-    ("work@example.com", "travel", "Travel", "#865e3c", "Europe/Madrid", "writer", 0, None),
+    ("work@example.com", "travel", "Travel", "#e66100", "Europe/Madrid", "writer", 0, None),
     ("personal@example.com", "primary", "Personal", "#3584e4", "Europe/Madrid", "owner", 1, None),
-    ("personal@example.com", "health", "Health", "#1a5fb4", "Europe/Madrid", "owner", 0, None),
-    ("personal@example.com", "birthdays", "Birthdays", "#62a0ea", "Europe/Madrid", "reader", 0, None),
+    ("personal@example.com", "health", "Health", "#3584e4", "Europe/Madrid", "owner", 0, None),
+    ("personal@example.com", "birthdays", "Birthdays", "#3584e4", "Europe/Madrid", "reader", 0, None),
     ("personal@example.com", "holidays", "Holidays in Spain", "#99c1f1", "Europe/Madrid", "reader", 0, None),
     ("side@example.com", "primary", "Side projects", "#33d17a", "Europe/Madrid", "owner", 1, None),
-    ("side@example.com", "oss", "OSS releases", "#26a269", "UTC", "owner", 0, None),
+    ("side@example.com", "oss", "OSS releases", "#33d17a", "UTC", "owner", 0, None),
     ("side@example.com", "clients", "Clients", "#8ff0a4", "America/New_York", "writer", 0, "#2ec27e"),
     ("family@example.com", "primary", "Family", "#9141ac", "Europe/Madrid", "owner", 1, None),
-    ("family@example.com", "school", "School", "#c061cb", "Europe/Madrid", "reader", 0, None),
-    ("family@example.com", "trips", "Trips", "#dc8add", "Europe/Madrid", "writer", 0, None),
+    ("family@example.com", "school", "School", "#9141ac", "Europe/Madrid", "reader", 0, None),
+    ("family@example.com", "trips", "Trips", "#9141ac", "Europe/Madrid", "writer", 0, None),
 ]
 
 # ------------------------------------------------------------------------------ events

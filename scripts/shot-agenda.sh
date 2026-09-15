@@ -13,9 +13,14 @@ out="${1:?usage: shot-agenda.sh <output.png>}"
 probe="$(mktemp --suffix=.js)"
 trap 'rm -f "$probe"' EXIT
 
-cat > "$probe" <<'JS'
+# A nonce per run. Without it the journal read could pick up the PREVIOUS run's answer —
+# still inside the time window — and approve a capture of whatever now has focus. That race
+# let a window that was not agenda through once; it is the whole reason this guard exists.
+nonce="$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+
+cat > "$probe" <<JS
 const w = workspace.activeWindow;
-print("SHOTGUARD|" + (w ? w.resourceClass : "none"));
+print("SHOTGUARD-$nonce|" + (w ? w.resourceClass : "none"));
 JS
 
 name="shotguard-$$"
@@ -25,13 +30,14 @@ gdbus call --session --dest org.kde.KWin --object-path /Scripting \
   --method org.kde.kwin.Scripting.start >/dev/null
 sleep 0.4
 
-active="$(journalctl --user -n 40 --since '10 seconds ago' 2>/dev/null \
-  | grep -o 'SHOTGUARD|[A-Za-z0-9._-]*' | tail -1 | cut -d'|' -f2)"
+active="$(journalctl --user -n 60 --since '20 seconds ago' 2>/dev/null \
+  | grep -o "SHOTGUARD-$nonce|[A-Za-z0-9._-]*" | tail -1 | cut -d'|' -f2)"
 
 if [ -z "$active" ]; then
-  echo "REFUSED: could not determine the focused window" >&2
+  echo "REFUSED: could not read this run's own probe" >&2
   exit 2
 fi
+
 # The installed app id, and the bare name a cargo-run build reports.
 case "$active" in
   io.github.guilhermestorck.agenda|agenda) ;;
