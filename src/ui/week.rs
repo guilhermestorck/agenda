@@ -26,6 +26,9 @@ pub const AXIS_WIDTH: i32 = 56;
 const MAX_DAYS: usize = 7;
 /// The hour the grid is scrolled to on open.
 const FIRST_VISIBLE_HOUR: f64 = 7.0;
+/// Narrowest a day column is allowed to get before the grid scrolls instead of squeezing.
+/// Below roughly this, a column holds no readable title and the grid stops being a calendar.
+pub const MIN_COLUMN_WIDTH: f64 = 110.0;
 
 /// One drawable event: everything the grid needs, with the store and Google already out of
 /// the picture.
@@ -69,6 +72,8 @@ pub struct Week {
     hours: Vec<gtk::Label>,
     /// Held so a caller can scroll to a given minute of the day through the mapping.
     scroller: gtk::ScrolledWindow,
+    header_spacer: gtk::Box,
+    all_day_spacer: gtk::Box,
     /// The optional second zone's readings, beside the first.
     secondary_hours: Vec<gtk::Label>,
     secondary_axis: gtk::Box,
@@ -99,9 +104,6 @@ impl Week {
             .collect();
 
         let header_row = gtk::Box::new(Orientation::Horizontal, 0);
-        let spacer = gtk::Box::new(Orientation::Horizontal, 0);
-        spacer.set_size_request(AXIS_WIDTH, -1);
-        header_row.append(&spacer);
         for label in &headers {
             header_row.append(label);
         }
@@ -109,7 +111,6 @@ impl Week {
         // Kept out of the timed grid entirely: an all-day event has no position on an hour
         // axis, and squeezing it onto one is how it ends up looking like a midnight meeting.
         let all_day_row = gtk::Box::new(Orientation::Horizontal, 0);
-        all_day_row.set_margin_start(AXIS_WIDTH);
         all_day_row.set_margin_top(2);
         all_day_row.set_margin_bottom(2);
         // A minimum height so the row stays a visible band even on a week with no all-day
@@ -163,17 +164,45 @@ impl Week {
         overlay.set_child(Some(&grid));
         overlay.add_overlay(&canvas);
 
+        let columns_box = gtk::Box::new(Orientation::Horizontal, 0);
+        columns_box.append(&overlay);
+
+        // The hour axis stays put while the day columns scroll sideways, so it keeps
+        // labelling the rows it is next to. Only the columns go in the horizontal scroller.
+        let column_scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .hexpand(true)
+            .vexpand(true)
+            .child(&columns_box)
+            .build();
+
         let scrollable = gtk::Box::new(Orientation::Horizontal, 0);
         scrollable.append(&secondary_axis);
         scrollable.append(&axis);
-        scrollable.append(&overlay);
+        scrollable.append(&column_scroller);
 
-        // The axis is inside the scrolled area so it moves with the hours it labels; the day
-        // headers are outside it so they stay put.
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
             .child(&scrollable)
+            .build();
+
+        // The day headings and the all-day band ride the same horizontal adjustment as the
+        // columns below them. Previously they sat outside the scrolled area entirely and
+        // could not shrink past their own text, so on a narrow window they overflowed and
+        // the last days were clipped with no way to reach them.
+        let header_scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::External)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .hadjustment(&column_scroller.hadjustment())
+            .child(&header_row)
+            .build();
+        let all_day_scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::External)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .hadjustment(&column_scroller.hadjustment())
+            .child(&all_day_row)
             .build();
 
         // Open on the working day rather than at midnight. The hours before dawn are the
@@ -191,10 +220,23 @@ impl Week {
             ));
         });
 
+        // Both rows are inset by the axis columns so their days line up with the grid's.
+        let header_line = gtk::Box::new(Orientation::Horizontal, 0);
+        let header_spacer = gtk::Box::new(Orientation::Horizontal, 0);
+        header_spacer.set_size_request(AXIS_WIDTH, -1);
+        header_line.append(&header_spacer);
+        header_line.append(&header_scroller);
+
+        let all_day_line = gtk::Box::new(Orientation::Horizontal, 0);
+        let all_day_spacer = gtk::Box::new(Orientation::Horizontal, 0);
+        all_day_spacer.set_size_request(AXIS_WIDTH, -1);
+        all_day_line.append(&all_day_spacer);
+        all_day_line.append(&all_day_scroller);
+
         let root = gtk::Box::new(Orientation::Vertical, 0);
-        root.append(&header_row);
+        root.append(&header_line);
         root.append(&gtk::Separator::new(Orientation::Horizontal));
-        root.append(&all_day_row);
+        root.append(&all_day_line);
         root.append(&gtk::Separator::new(Orientation::Horizontal));
         root.append(&scroller);
 
@@ -218,6 +260,8 @@ impl Week {
             span,
             hours,
             scroller: scroller.clone(),
+            header_spacer,
+            all_day_spacer,
             secondary_hours,
             secondary_axis,
             secondary_zone: Rc::new(Cell::new(None)),
@@ -307,6 +351,10 @@ impl Week {
         }
         self.grid
             .set_content_height(day_height(&occupied, core) as i32);
+        // Squeeze to fit, but only down to a point. Past this the grid scrolls sideways
+        // rather than shrinking columns into unreadable slivers.
+        self.grid
+            .set_content_width((self.span.get().days() as f64 * MIN_COLUMN_WIDTH) as i32);
     }
 
     /// Scroll so `minute` of the day sits at the top.
@@ -322,6 +370,16 @@ impl Week {
     pub fn set_secondary_zone(self: &Rc<Self>, zone: Option<Tz>) {
         self.secondary_zone.set(zone);
         self.secondary_axis.set_visible(zone.is_some());
+        // The headings are inset by however many axis columns are showing, or they stop
+        // lining up with the days below them.
+        let inset = if zone.is_some() {
+            AXIS_WIDTH * 2
+        } else {
+            AXIS_WIDTH
+        };
+        for spacer in [&self.header_spacer, &self.all_day_spacer] {
+            spacer.set_size_request(inset, -1);
+        }
         self.refresh();
     }
 
@@ -437,6 +495,9 @@ impl Week {
         self.span.set(span);
         for (index, label) in self.headers.iter().enumerate() {
             label.set_visible(index < span.days());
+            // Headings share the grid's minimum column width, or the two disagree about how
+            // wide a day is — which is what left them misaligned on a narrow window.
+            label.set_size_request(MIN_COLUMN_WIDTH as i32, -1);
         }
         self.refresh();
     }
