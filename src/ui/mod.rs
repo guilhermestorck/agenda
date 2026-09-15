@@ -189,6 +189,7 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     ui.sync_button.set_tooltip_text(Some("Sync now"));
     let clicked = ui.clone();
     ui.sync_button.connect_clicked(move |_| sync_now(&clicked));
+    header.pack_start(&ui.sync_button);
 
     let navigation = gtk::Box::new(Orientation::Horizontal, 0);
     navigation.add_css_class("linked");
@@ -309,28 +310,14 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     ui.sidebar_stack.set_vexpand(true);
 
     let kebab = gtk::MenuButton::new();
-    kebab.set_icon_name("view-more-symbolic");
+    kebab.set_icon_name("open-menu-symbolic");
     kebab.add_css_class("flat");
-    kebab.set_tooltip_text(Some("Sidebar"));
+    kebab.set_tooltip_text(Some("Menu"));
 
-    let sidebar_top = gtk::Box::new(Orientation::Horizontal, 0);
-    sidebar_top.set_halign(Align::End);
-    sidebar_top.append(&kebab);
-
-    let sidebar_actions = gtk::Box::new(Orientation::Horizontal, 6);
-    sidebar_actions.set_margin_top(6);
-    sidebar_actions.set_margin_bottom(6);
-    sidebar_actions.set_margin_start(6);
-    sidebar_actions.set_margin_end(6);
-    ui.connect_button.set_hexpand(true);
-    sidebar_actions.append(&ui.connect_button);
-    sidebar_actions.append(&ui.sync_button);
-
+    // Nothing but the view. Connect account moved to Preferences → Accounts, sync to the
+    // header: both act on accounts rather than describing them.
     let sidebar_root = gtk::Box::new(Orientation::Vertical, 0);
-    sidebar_root.append(&sidebar_top);
     sidebar_root.append(&ui.sidebar_stack);
-    sidebar_root.append(&gtk::Separator::new(Orientation::Horizontal));
-    sidebar_root.append(&sidebar_actions);
 
     ui.views.add_named(ui.week.widget(), Some("grid"));
     ui.views.add_named(ui.month.widget(), Some("month"));
@@ -398,11 +385,13 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
             popover.popdown();
             let settings = ui.settings.borrow();
             let applied = ui.clone();
+            let accounts = accounts_page(&ui);
             let dialog = preferences::dialog(
                 settings.timezone.as_deref(),
                 settings.secondary_timezone.as_deref(),
                 settings.core_hours_start,
                 settings.core_hours_end,
+                &accounts,
                 move |key, value| apply_setting(&applied, key, value),
             );
             drop(settings);
@@ -425,6 +414,7 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     }
     popover.set_child(Some(&choices));
     kebab.set_popover(Some(&popover));
+    header.pack_end(&kebab);
 
     // The kebab lives inside the sidebar, so it cannot be the only way back: hiding the
     // sidebar hides its own control, and the user is stuck. This one is in the header.
@@ -522,6 +512,172 @@ fn start_connect(ui: &Rc<Ui>) {
 
 /// Redraw the account list from the store. Every connected account is shown, always —
 /// SPEC §1: there is no current account, and nothing is hidden to make room for another.
+/// The Accounts page of the preferences dialog.
+///
+/// Everything that *changes* an account or a calendar lives here. The sidebar used to carry
+/// it all, which made a view of the calendar double as its control panel — so glancing at
+/// what was on screen meant reading past colour pickers, reminder menus and a Reconnect
+/// button.
+fn accounts_page(ui: &Rc<Ui>) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    page.set_title("Accounts");
+    page.set_icon_name(Some("system-users-symbolic"));
+
+    let actions = adw::PreferencesGroup::new();
+    let add = gtk::Button::with_label("Connect account");
+    add.add_css_class("suggested-action");
+    add.set_halign(Align::Start);
+    {
+        let ui = ui.clone();
+        add.connect_clicked(move |_| start_connect(&ui));
+    }
+    actions.add(&add);
+    page.add(&actions);
+
+    let groups = match read_groups(ui) {
+        Ok(groups) => groups,
+        Err(error) => {
+            tracing::error!(error = %format!("{error:#}"), "could not read the accounts");
+            Vec::new()
+        }
+    };
+
+    if groups.is_empty() {
+        let empty = adw::PreferencesGroup::new();
+        empty.set_description(Some("No accounts connected yet."));
+        page.add(&empty);
+        return page;
+    }
+
+    for (account, calendars) in groups {
+        let group = adw::PreferencesGroup::new();
+        group.set_title(
+            account
+                .label
+                .as_deref()
+                .or(account.display_name.as_deref())
+                .unwrap_or(&account.email),
+        );
+        group.set_description(Some(&account.email));
+
+        let header = gtk::Box::new(Orientation::Horizontal, 6);
+        // The account's own colour: its marker on every event, and the fill for calendars
+        // Google gave none.
+        let account_color = color_button(account.color.as_deref());
+        {
+            let ui = ui.clone();
+            let email = account.email.clone();
+            account_color.connect_rgba_notify(move |button| {
+                let (email, color) = (email.clone(), hex_of(button.rgba()));
+                apply(&ui, move |store| store.set_account_color(&email, &color));
+            });
+        }
+        header.append(&account_color);
+
+        let menu = gtk::MenuButton::builder()
+            .icon_name("view-more-symbolic")
+            .valign(Align::Center)
+            .build();
+        menu.add_css_class("flat");
+        menu.set_popover(Some(&account_menu(ui, &account)));
+        header.append(&menu);
+        group.set_header_suffix(Some(&header));
+
+        if ui.needs_reconnect.borrow().contains(&account.email) {
+            // The account's events stay on the grid meanwhile. They were real when they were
+            // synced, and blanking them would lose more than it explains.
+            let row = adw::ActionRow::new();
+            row.set_title("Needs reconnecting");
+            row.set_subtitle("Google no longer accepts the stored credentials");
+            let reconnect = gtk::Button::with_label("Reconnect");
+            reconnect.add_css_class("suggested-action");
+            reconnect.set_valign(Align::Center);
+            let ui = ui.clone();
+            reconnect.connect_clicked(move |_| start_connect(&ui));
+            row.add_suffix(&reconnect);
+            group.add(&row);
+        }
+
+        for calendar in calendars {
+            let row = adw::ActionRow::new();
+            row.set_title(&glib::markup_escape_text(&calendar.summary));
+
+            let fill = color_button(
+                calendar
+                    .user_color
+                    .as_deref()
+                    .or(calendar.color.as_deref())
+                    .or(account.color.as_deref()),
+            );
+            fill.set_valign(Align::Center);
+            {
+                let ui = ui.clone();
+                let (acct, id) = (calendar.account.clone(), calendar.id.clone());
+                fill.connect_rgba_notify(move |button| {
+                    let (acct, id, color) = (acct.clone(), id.clone(), hex_of(button.rgba()));
+                    apply(&ui, move |store| {
+                        store.set_calendar_user_color(&acct, &id, Some(&color))
+                    });
+                });
+            }
+            row.add_prefix(&fill);
+
+            let reminders = gtk::MenuButton::builder()
+                .icon_name("alarm-symbolic")
+                .valign(Align::Center)
+                .tooltip_text("When to be reminded about this calendar")
+                .build();
+            reminders.add_css_class("flat");
+            {
+                let content = gtk::Box::new(Orientation::Vertical, 6);
+                content.set_margin_top(8);
+                content.set_margin_bottom(8);
+                content.set_margin_start(8);
+                content.set_margin_end(8);
+                let ui = ui.clone();
+                let (acct, id) = (calendar.account.clone(), calendar.id.clone());
+                content.append(&lead_control(
+                    calendar.notify_lead_minutes,
+                    "this account's reminder time",
+                    move |minutes| {
+                        let (acct, id) = (acct.clone(), id.clone());
+                        apply(&ui, move |store| {
+                            store.set_calendar_notify_lead(&acct, &id, minutes)
+                        });
+                    },
+                ));
+                reminders.set_popover(Some(&gtk::Popover::builder().child(&content).build()));
+            }
+            if calendar.notify_lead_minutes.is_some() {
+                reminders.add_css_class("accent");
+            }
+            row.add_suffix(&reminders);
+
+            // Only offered when there is something to undo, so the row stays quiet for a
+            // calendar the user has never touched.
+            if calendar.user_color.is_some() {
+                let reset = gtk::Button::from_icon_name("edit-undo-symbolic");
+                reset.add_css_class("flat");
+                reset.set_valign(Align::Center);
+                reset.set_tooltip_text(Some("Use the calendar's own colour again"));
+                let ui = ui.clone();
+                let (acct, id) = (calendar.account.clone(), calendar.id.clone());
+                reset.connect_clicked(move |_| {
+                    let (acct, id) = (acct.clone(), id.clone());
+                    apply(&ui, move |store| {
+                        store.set_calendar_user_color(&acct, &id, None)
+                    });
+                });
+                row.add_suffix(&reset);
+            }
+
+            group.add(&row);
+        }
+        page.add(&group);
+    }
+    page
+}
+
 fn refresh_sidebar(ui: &Rc<Ui>) {
     while let Some(child) = ui.sidebar.first_child() {
         ui.sidebar.remove(&child);
@@ -575,26 +731,13 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
 
     for (account, calendars) in groups {
         let group = gtk::Box::new(Orientation::Vertical, 0);
-        group.set_margin_bottom(12);
+        group.set_margin_bottom(10);
 
         let heading = gtk::Box::new(Orientation::Horizontal, 8);
         heading.set_margin_start(12);
         heading.set_margin_end(12);
         heading.set_margin_top(6);
-
-        // The account's own colour: its marker on every event, and the fill for calendars
-        // Google gave none.
-        let account_color = color_button(account.color.as_deref());
-        {
-            let ui = ui.clone();
-            let email = account.email.clone();
-            account_color.connect_rgba_notify(move |button| {
-                let (email, color) = (email.clone(), hex_of(button.rgba()));
-                apply(&ui, move |store| store.set_account_color(&email, &color));
-            });
-        }
-        heading.append(&account_color);
-
+        heading.append(&swatch(account.color.as_deref()));
         heading.append(&avatar_for(&account, 24));
 
         let name = gtk::Label::new(Some(
@@ -611,33 +754,41 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         name.set_tooltip_text(Some(&account.email));
         heading.append(&name);
 
-        let menu = gtk::MenuButton::builder()
-            .icon_name("view-more-symbolic")
-            .valign(Align::Center)
-            .build();
-        menu.add_css_class("flat");
-        menu.set_popover(Some(&account_menu(ui, &account)));
-        heading.append(&menu);
+        // Whether an account is on the grid is a view question, so it stays here. Everything
+        // that alters the account itself moved to Preferences → Accounts.
+        let all_shown = calendars.iter().all(|calendar| calendar.visible);
+        let eye = eye_button(all_shown, "account");
+        {
+            let ui = ui.clone();
+            let ids: Vec<(String, String)> = calendars
+                .iter()
+                .map(|calendar| (calendar.account.clone(), calendar.id.clone()))
+                .collect();
+            eye.connect_clicked(move |_| {
+                let (ids, visible) = (ids.clone(), !all_shown);
+                apply(&ui, move |store| {
+                    for (account, id) in &ids {
+                        store.set_calendar_visible(account, id, visible)?;
+                    }
+                    Ok(())
+                });
+            });
+        }
+        reveal_on_hover(&heading, &eye);
+        heading.append(&eye);
         group.append(&heading);
 
         if ui.needs_reconnect.borrow().contains(&account.email) {
-            // On its own row, not beside the name: inline it squeezed a 30-character address
-            // down to an ellipsis, so the button said which account was broken by hiding it.
-            //
-            // The account's events stay on the grid meanwhile. They were real when they were
-            // synced, and blanking them would lose more than it explains.
-            let reconnect = gtk::Button::with_label("Reconnect");
-            reconnect.add_css_class("suggested-action");
-            reconnect.set_margin_start(12);
-            reconnect.set_margin_end(12);
-            reconnect.set_margin_top(6);
-            reconnect.set_tooltip_text(Some(&format!(
-                "Google no longer accepts the stored credentials for {}",
-                account.email
-            )));
-            let ui = ui.clone();
-            reconnect.connect_clicked(move |_| start_connect(&ui));
-            group.append(&reconnect);
+            // Read-only: a label, not a button. Fixing it lives in Preferences now, but the
+            // user still has to be able to see that an account is broken without going
+            // looking — §2.11.
+            let broken = gtk::Label::new(Some("Needs reconnecting"));
+            broken.add_css_class("caption");
+            broken.add_css_class("error");
+            broken.set_halign(Align::Start);
+            broken.set_margin_start(44);
+            broken.set_margin_end(12);
+            group.append(&broken);
         }
 
         for calendar in calendars {
@@ -645,41 +796,13 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
             row.set_margin_start(20);
             row.set_margin_end(12);
             row.set_margin_top(4);
-
-            let shown = gtk::CheckButton::new();
-            shown.set_active(calendar.visible);
-            shown.set_valign(Align::Center);
-            shown.set_tooltip_text(Some("Show this calendar"));
-            {
-                let ui = ui.clone();
-                let (account, id) = (calendar.account.clone(), calendar.id.clone());
-                shown.connect_toggled(move |button| {
-                    let (account, id, visible) = (account.clone(), id.clone(), button.is_active());
-                    apply(&ui, move |store| {
-                        store.set_calendar_visible(&account, &id, visible)
-                    });
-                });
-            }
-            row.append(&shown);
-
-            let fill = color_button(
+            row.append(&swatch(
                 calendar
                     .user_color
                     .as_deref()
                     .or(calendar.color.as_deref())
                     .or(account.color.as_deref()),
-            );
-            {
-                let ui = ui.clone();
-                let (acct, id) = (calendar.account.clone(), calendar.id.clone());
-                fill.connect_rgba_notify(move |button| {
-                    let (acct, id, color) = (acct.clone(), id.clone(), hex_of(button.rgba()));
-                    apply(&ui, move |store| {
-                        store.set_calendar_user_color(&acct, &id, Some(&color))
-                    });
-                });
-            }
-            row.append(&fill);
+            ));
 
             let label = gtk::Label::new(Some(&calendar.summary));
             label.set_halign(Align::Start);
@@ -691,59 +814,90 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
             }
             row.append(&label);
 
-            let reminders = gtk::MenuButton::builder()
-                .icon_name("alarm-symbolic")
-                .valign(Align::Center)
-                .tooltip_text("When to be reminded about this calendar")
-                .build();
-            reminders.add_css_class("flat");
+            let eye = eye_button(calendar.visible, &calendar.summary);
             {
-                let content = gtk::Box::new(Orientation::Vertical, 6);
-                content.set_margin_top(8);
-                content.set_margin_bottom(8);
-                content.set_margin_start(8);
-                content.set_margin_end(8);
                 let ui = ui.clone();
-                let (acct, id) = (calendar.account.clone(), calendar.id.clone());
-                content.append(&lead_control(
-                    calendar.notify_lead_minutes,
-                    "this account's reminder time",
-                    move |minutes| {
-                        let (acct, id) = (acct.clone(), id.clone());
-                        apply(&ui, move |store| {
-                            store.set_calendar_notify_lead(&acct, &id, minutes)
-                        });
-                    },
-                ));
-                reminders.set_popover(Some(&gtk::Popover::builder().child(&content).build()));
-            }
-            if calendar.notify_lead_minutes.is_some() {
-                reminders.add_css_class("accent");
-            }
-            row.append(&reminders);
-
-            // Only offered when there is something to undo, so the row stays quiet for a
-            // calendar the user has never touched.
-            if calendar.user_color.is_some() {
-                let reset = gtk::Button::from_icon_name("edit-undo-symbolic");
-                reset.add_css_class("flat");
-                reset.set_valign(Align::Center);
-                reset.set_tooltip_text(Some("Use the calendar's own colour again"));
-                let ui = ui.clone();
-                let (acct, id) = (calendar.account.clone(), calendar.id.clone());
-                reset.connect_clicked(move |_| {
-                    let (acct, id) = (acct.clone(), id.clone());
+                let (account, id, visible) = (
+                    calendar.account.clone(),
+                    calendar.id.clone(),
+                    !calendar.visible,
+                );
+                eye.connect_clicked(move |_| {
+                    let (account, id) = (account.clone(), id.clone());
                     apply(&ui, move |store| {
-                        store.set_calendar_user_color(&acct, &id, None)
+                        store.set_calendar_visible(&account, &id, visible)
                     });
                 });
-                row.append(&reset);
             }
+            reveal_on_hover(&row, &eye);
+            row.append(&eye);
 
             group.append(&row);
         }
         ui.sidebar.append(&group);
     }
+}
+
+/// A read-only colour chip. The sidebar shows which colour a calendar is; changing it is
+/// Preferences' business.
+fn swatch(color: Option<&str>) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::new();
+    area.set_size_request(16, 16);
+    area.set_valign(Align::Center);
+    area.set_can_target(false);
+    let color = color.unwrap_or("#3584e4").to_string();
+    area.set_draw_func(move |_, context, width, height| {
+        if let Ok(rgba) = gtk::gdk::RGBA::parse(&color) {
+            context.set_source_rgb(
+                f64::from(rgba.red()),
+                f64::from(rgba.green()),
+                f64::from(rgba.blue()),
+            );
+            context.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
+            let _ = context.fill();
+        }
+    });
+    area
+}
+
+/// The one control the sidebar keeps: whether this is drawn on the grid.
+fn eye_button(visible: bool, what: &str) -> gtk::Button {
+    let icon = if visible {
+        "view-reveal-symbolic"
+    } else {
+        "view-conceal-symbolic"
+    };
+    let button = gtk::Button::from_icon_name(icon);
+    button.add_css_class("flat");
+    button.set_valign(Align::Center);
+    button.set_tooltip_text(Some(&if visible {
+        format!("Hide {what}")
+    } else {
+        format!("Show {what}")
+    }));
+    button
+}
+
+/// Show `control` only while the pointer is over `row`.
+///
+/// Opacity rather than visibility: hiding it outright would reflow the row on every hover,
+/// and a sidebar that twitches as the pointer crosses it is worse than one slightly busier.
+/// A hidden calendar keeps its eye showing regardless, or there would be no way to find the
+/// thing you turned off.
+fn reveal_on_hover(row: &gtk::Box, control: &gtk::Button) {
+    let concealed = control.icon_name().as_deref() == Some("view-conceal-symbolic");
+    control.set_opacity(if concealed { 1.0 } else { 0.0 });
+
+    let motion = gtk::EventControllerMotion::new();
+    let entered = control.clone();
+    motion.connect_enter(move |_, _, _| entered.set_opacity(1.0));
+    let left = control.clone();
+    motion.connect_leave(move |_| {
+        if !concealed {
+            left.set_opacity(0.0);
+        }
+    });
+    row.add_controller(motion);
 }
 
 /// A reminder lead with an explicit "inherit" state.

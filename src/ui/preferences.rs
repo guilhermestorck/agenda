@@ -52,9 +52,12 @@ pub fn dialog(
     secondary: Option<&str>,
     core_start: u32,
     core_end: u32,
+    accounts: &adw::PreferencesPage,
     on_change: impl Fn(&str, Option<String>) + Clone + 'static,
 ) -> adw::PreferencesDialog {
     let page = adw::PreferencesPage::new();
+    page.set_title("Settings");
+    page.set_icon_name(Some("preferences-system-symbolic"));
 
     let zones = adw::PreferencesGroup::new();
     zones.set_title("Time zones");
@@ -133,7 +136,10 @@ pub fn dialog(
 
     let dialog = adw::PreferencesDialog::new();
     dialog.set_title("Preferences");
+    // Two pages give adw its own switcher along the top — the categories the dialog is
+    // organised by, rather than one scrolling list of everything.
     dialog.add(&page);
+    dialog.add(accounts);
     dialog
 }
 
