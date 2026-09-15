@@ -11,6 +11,10 @@ use chrono_tz::Tz;
 
 use super::layout::segments;
 use super::span::monday_of;
+use adw::prelude::*;
+use gtk::gdk;
+use gtk::glib;
+
 use super::week::Item;
 
 /// Six weeks, always. Five would fit some months and not others, and a grid that changes
@@ -64,6 +68,202 @@ pub fn visible_and_overflow(total: usize, room: usize) -> (usize, usize) {
 /// Whether a cell belongs to the month being shown, rather than the days either side.
 pub fn in_month(cell: usize, start: NaiveDate, month: u32) -> bool {
     (start + Duration::days(cell as i64)).month() == month
+}
+
+/// What the grid was last asked to show, kept so the chips can be re-placed once GTK has
+/// given the cells a height.
+struct Shown {
+    items: Vec<Item>,
+    start: NaiveDate,
+    month: u32,
+    zone: Tz,
+}
+
+/// The month grid widget.
+pub struct Grid {
+    root: gtk::Box,
+    cells: Vec<gtk::Box>,
+    headings: Vec<gtk::Label>,
+    /// Held so the chips can be re-placed once GTK has allocated the cells. How many fit
+    /// depends on the cell's height, which is zero until the first allocation.
+    last: std::cell::RefCell<Option<Shown>>,
+}
+
+/// Roughly how tall one chip is, used to work out how many fit.
+const CHIP_HEIGHT: i32 = 20;
+
+impl Grid {
+    pub fn new() -> std::rc::Rc<Self> {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+
+        let weekdays = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        for label in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] {
+            let heading = gtk::Label::new(Some(label));
+            heading.set_hexpand(true);
+            heading.add_css_class("dim-label");
+            heading.add_css_class("caption");
+            heading.set_margin_top(4);
+            heading.set_margin_bottom(4);
+            weekdays.append(&heading);
+        }
+        root.append(&weekdays);
+        root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        let mut cells = Vec::with_capacity(CELLS);
+        let mut headings = Vec::with_capacity(CELLS);
+        for row in 0..6 {
+            let week = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            week.set_vexpand(true);
+            for column in 0..7 {
+                let cell = gtk::Box::new(gtk::Orientation::Vertical, 1);
+                cell.set_hexpand(true);
+                cell.set_vexpand(true);
+                cell.add_css_class("month-cell");
+
+                let heading = gtk::Label::new(None);
+                heading.set_xalign(0.0);
+                heading.add_css_class("caption");
+                heading.set_margin_start(4);
+                cell.append(&heading);
+
+                headings.push(heading);
+                week.append(&cell);
+                cells.push(cell);
+                let _ = (row, column);
+            }
+            root.append(&week);
+            if row < 5 {
+                root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+            }
+        }
+
+        let grid = std::rc::Rc::new(Self {
+            root,
+            cells,
+            headings,
+            last: std::cell::RefCell::new(None),
+        });
+
+        // A cell's height is zero until GTK has laid the window out, so a placement made
+        // now fits nothing and reports every event as overflow. Re-place once the layout
+        // has happened, and again whenever the grid is shown.
+        //
+        // ponytail: no hook for a live window resize — gtk::Box has no resize signal, so
+        // the chips only re-fit on the next redraw. Add a sizing probe if that grates.
+        let on_map = grid.clone();
+        grid.root.connect_map(move |_| {
+            let again = on_map.clone();
+            glib::idle_add_local_once(move || again.replace_chips());
+        });
+        grid
+    }
+
+    pub fn widget(&self) -> &gtk::Box {
+        &self.root
+    }
+
+    pub fn set_items(
+        self: &std::rc::Rc<Self>,
+        items: &[Item],
+        start: NaiveDate,
+        month: u32,
+        zone: Tz,
+    ) {
+        *self.last.borrow_mut() = Some(Shown {
+            items: items.to_vec(),
+            start,
+            month,
+            zone,
+        });
+        self.replace_chips();
+        // Again once the cells have a height, which they do not yet.
+        let again = self.clone();
+        glib::idle_add_local_once(move || again.replace_chips());
+    }
+
+    fn replace_chips(&self) {
+        let held = self.last.borrow();
+        let Some(shown) = held.as_ref() else {
+            return;
+        };
+        let (start, month, zone) = (shown.start, shown.month, shown.zone);
+        let buckets = cells(&shown.items, start, zone);
+        let today = chrono::Utc::now().with_timezone(&zone).date_naive();
+
+        for (index, cell) in self.cells.iter().enumerate() {
+            // Everything but the date heading, which is rebuilt in place.
+            while let Some(child) = cell.last_child() {
+                if child == self.headings[index].clone().upcast::<gtk::Widget>() {
+                    break;
+                }
+                cell.remove(&child);
+            }
+
+            let date = start + Duration::days(index as i64);
+            let heading = &self.headings[index];
+            heading.set_text(&date.format("%-d").to_string());
+            heading.remove_css_class("dim-label");
+            heading.remove_css_class("accent");
+            if !in_month(index, start, month) {
+                heading.add_css_class("dim-label");
+            }
+            if date == today {
+                heading.add_css_class("accent");
+            }
+
+            // How many chips fit is measured, not assumed: the cell's height depends on the
+            // window, and a hard-coded count is wrong on every size but one.
+            let available = (cell.height() - CHIP_HEIGHT).max(0);
+            let room = ((available / CHIP_HEIGHT) as usize).max(1);
+            let events = &buckets[index];
+            let (shown, hidden) = visible_and_overflow(events.len(), room);
+
+            for item in events.iter().take(shown) {
+                cell.append(&chip(item));
+            }
+            if hidden > 0 {
+                let more = gtk::Label::new(Some(&format!("+{hidden} more")));
+                more.set_xalign(0.0);
+                more.add_css_class("caption");
+                more.add_css_class("dim-label");
+                more.set_margin_start(4);
+                cell.append(&more);
+            }
+        }
+    }
+}
+
+/// One event in a cell: a colour bar and as much of the title as fits.
+fn chip(item: &Item) -> gtk::Box {
+    let chip = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    chip.set_margin_start(2);
+    chip.set_margin_end(2);
+
+    let swatch = gtk::DrawingArea::new();
+    swatch.set_size_request(3, -1);
+    let fill = item.colors.fill.clone();
+    swatch.set_draw_func(move |_, context, width, height| {
+        if let Ok(rgba) = gdk::RGBA::parse(&fill) {
+            context.set_source_rgb(
+                f64::from(rgba.red()),
+                f64::from(rgba.green()),
+                f64::from(rgba.blue()),
+            );
+            context.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
+            let _ = context.fill();
+        }
+    });
+    chip.append(&swatch);
+
+    let label = gtk::Label::new(Some(&item.summary));
+    label.set_xalign(0.0);
+    label.set_hexpand(true);
+    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    label.add_css_class("caption");
+    label.set_tooltip_text(Some(&format!("{} — {}", item.summary, item.account)));
+    chip.append(&label);
+
+    chip
 }
 
 #[cfg(test)]

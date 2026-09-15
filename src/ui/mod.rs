@@ -22,7 +22,7 @@ use gtk::{Align, Orientation};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
-use chrono::{Duration, TimeZone};
+use chrono::{Datelike, Duration, TimeZone};
 
 use crate::accounts::style::resolve;
 use crate::accounts::{self, Connected};
@@ -51,6 +51,7 @@ struct Ui {
     connect_button: gtk::Button,
     week: Rc<week::Week>,
     agenda: Rc<agenda::List>,
+    month: Rc<month::Grid>,
     /// Swaps between the time grid and the list views. Only one is ever populated.
     views: gtk::Stack,
     view: Cell<View>,
@@ -139,6 +140,7 @@ fn startup(window: &adw::ApplicationWindow) -> anyhow::Result<gtk::Widget> {
         syncing: Cell::new(false),
         week: week::Week::new(),
         agenda: agenda::List::new(),
+        month: month::Grid::new(),
         views: gtk::Stack::new(),
         view: Cell::new(View::Grid),
         needs_reconnect: RefCell::new(HashSet::new()),
@@ -213,9 +215,16 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
         .iter()
         .position(|candidate| *candidate == span)
         .unwrap_or(0);
-    if saved.get("span").map(String::as_str) == Some("agenda") {
-        ui.view.set(View::Agenda);
-        switcher_start = span::Span::ALL.len();
+    match saved.get("span").map(String::as_str) {
+        Some("month") => {
+            ui.view.set(View::Month);
+            switcher_start = span::Span::ALL.len();
+        }
+        Some("agenda") => {
+            ui.view.set(View::Agenda);
+            switcher_start = span::Span::ALL.len() + 1;
+        }
+        _ => {}
     }
     ui.week.set_span(span);
     ui.week
@@ -226,6 +235,7 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     });
 
     let mut labels: Vec<&str> = span::Span::ALL.iter().map(|span| span.label()).collect();
+    labels.push("Month");
     labels.push("Agenda");
     let switcher = gtk::DropDown::from_strings(&labels);
     switcher.set_selected(switcher_start as u32);
@@ -234,11 +244,16 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     switcher.connect_selected_notify(move |switcher| {
         let chosen = switcher.selected() as usize;
         let Some(span) = span::Span::ALL.get(chosen).copied() else {
-            // Past the spans is the agenda list, which has no span of its own.
-            clone.view.set(View::Agenda);
-            clone.views.set_visible_child_name("agenda");
+            // Past the spans are the list views, which have no span of their own.
+            let (view, key) = if chosen == span::Span::ALL.len() {
+                (View::Month, "month")
+            } else {
+                (View::Agenda, "agenda")
+            };
+            clone.view.set(view);
+            clone.views.set_visible_child_name(key);
             refresh_week(&clone);
-            if let Err(error) = crate::config::set_view_state(&clone.view_state, "span", "agenda") {
+            if let Err(error) = crate::config::set_view_state(&clone.view_state, "span", key) {
                 tracing::warn!(error = %format!("{error:#}"), "could not remember the view");
             }
             return;
@@ -305,11 +320,13 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     sidebar_root.append(&sidebar_actions);
 
     ui.views.add_named(ui.week.widget(), Some("grid"));
+    ui.views.add_named(ui.month.widget(), Some("month"));
     ui.views.add_named(ui.agenda.widget(), Some("agenda"));
     // After the children exist, not before: naming a child of an empty stack does nothing,
     // and the first child added then wins.
     ui.views.set_visible_child_name(match ui.view.get() {
         View::Grid => "grid",
+        View::Month => "month",
         View::Agenda => "agenda",
     });
 
@@ -1077,6 +1094,21 @@ fn refresh_week(ui: &Rc<Ui>) {
     };
     let to = from + Duration::days(ui.week.days() as i64);
 
+    // Each view asks for its own window. The grid's seven days are not the agenda's month
+    // and not the month grid's forty-two.
+    let (from, to) = if ui.view.get() == View::Month {
+        let grid_start = month::grid_start(start);
+        match zone
+            .from_local_datetime(&grid_start.and_hms_opt(0, 0, 0).expect("midnight exists"))
+            .earliest()
+        {
+            Some(midnight) => (midnight, midnight + Duration::days(month::CELLS as i64)),
+            None => (from, to),
+        }
+    } else {
+        (from, to)
+    };
+
     // The agenda looks a month ahead from the start of today rather than at the grid's
     // span: a list of "what is next" that stops on Sunday is not what is next.
     let (from, to) = if ui.view.get() == View::Agenda {
@@ -1103,6 +1135,12 @@ fn refresh_week(ui: &Rc<Ui>) {
         View::Grid => {
             tracing::debug!(week = %start, events = items.len(), "redrew the week");
             ui.week.set_items(items);
+        }
+        View::Month => {
+            let grid_start = month::grid_start(start);
+            tracing::debug!(month = %start.format("%B %Y"), events = items.len(), "redrew the month");
+            ui.week.title().set_text(&start.format("%B %Y").to_string());
+            ui.month.set_items(&items, grid_start, start.month(), zone);
         }
         View::Agenda => {
             tracing::debug!(events = items.len(), "redrew the agenda");
@@ -1385,5 +1423,6 @@ mod sidebar_state_tests {
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum View {
     Grid,
+    Month,
     Agenda,
 }
