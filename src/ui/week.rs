@@ -635,8 +635,6 @@ impl Week {
             }
         }
 
-        self.title.set_text(&title_for(start, days));
-
         self.grid.queue_draw();
     }
 }
@@ -644,7 +642,7 @@ impl Week {
 /// The header's date range. A single day names itself rather than claiming a range, and a
 /// range spanning two months names both — "14 – 20 September" is wrong when the 20th is in
 /// October.
-fn title_for(start: NaiveDate, days: usize) -> String {
+pub fn title_for(start: NaiveDate, days: usize) -> String {
     if days <= 1 {
         return start.format("%A %-d %B %Y").to_string();
     }

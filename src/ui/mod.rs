@@ -189,21 +189,26 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     ui.sync_button.set_tooltip_text(Some("Sync now"));
     let clicked = ui.clone();
     ui.sync_button.connect_clicked(move |_| sync_now(&clicked));
+    // Declared here so it is packed first and sits leftmost; its handler needs `split`,
+    // which does not exist yet, and is connected further down.
+    let reveal = gtk::ToggleButton::new();
+    reveal.set_icon_name("sidebar-show-symbolic");
+    reveal.add_css_class("flat");
+    reveal.set_tooltip_text(Some("Show accounts"));
+    header.pack_start(&reveal);
+
     header.pack_start(&ui.sync_button);
 
-    // Next to sync, and opening Preferences directly. A menu whose only entry worth having
-    // was "Preferences…" was a click in the way of a button.
+    // The date range, when a view needs one. Week and day carry their dates in the column
+    // headings, so it is left empty there and takes no space.
+    header.pack_start(ui.week.title());
+
     let cog = gtk::Button::from_icon_name("emblem-system-symbolic");
     cog.add_css_class("flat");
     cog.set_tooltip_text(Some("Preferences"));
-    header.pack_start(&cog);
 
-    let navigation = gtk::Box::new(Orientation::Horizontal, 0);
-    navigation.add_css_class("linked");
     let previous = gtk::Button::from_icon_name("go-previous-symbolic");
     let next = gtk::Button::from_icon_name("go-next-symbolic");
-    navigation.append(&previous);
-    navigation.append(&next);
     let today = gtk::Button::with_label("Today");
 
     for (button, weeks) in [(&previous, -1_i64), (&next, 1)] {
@@ -289,10 +294,21 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
         }
     });
 
-    header.pack_end(&navigation);
-    header.pack_end(&today);
+    // Previous / Today / next in the middle, as the title widget — which is what a
+    // GtkHeaderBar centres. The window's own title is dropped: the day columns already say
+    // which dates are on screen, so it only repeated them.
+    // Today sits between the arrows rather than after them: it is where you go back to, so
+    // it belongs between the two directions you leave in.
+    let centre = gtk::Box::new(Orientation::Horizontal, 0);
+    centre.add_css_class("linked");
+    centre.append(&previous);
+    centre.append(&today);
+    centre.append(&next);
+    header.set_title_widget(Some(&centre));
+
+    // pack_end fills from the right, so the cog ends up outermost and the switcher inside it.
+    header.pack_end(&cog);
     header.pack_end(&switcher);
-    header.set_title_widget(Some(ui.week.title()));
 
     ui.sidebar.set_margin_top(6);
     ui.sidebar.set_margin_bottom(6);
@@ -389,12 +405,8 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     }
     popover.set_child(Some(&choices));
 
-    // The kebab lives inside the sidebar, so it cannot be the only way back: hiding the
-    // sidebar hides its own control, and the user is stuck. This one is in the header.
-    let reveal = gtk::ToggleButton::new();
-    reveal.set_icon_name("sidebar-show-symbolic");
-    reveal.add_css_class("flat");
-    reveal.set_tooltip_text(Some("Show accounts"));
+    // A sidebar's own control cannot live inside the thing it hides, so the way back is in
+    // the header. Declared above; only its behaviour belongs here.
     {
         let apply = apply.clone();
         let ui = ui.clone();
@@ -415,7 +427,6 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
         .bind_property("show-sidebar", &reveal, "active")
         .sync_create()
         .build();
-    header.pack_start(&reveal);
 
     {
         let ui = ui.clone();
@@ -1435,6 +1446,8 @@ fn refresh_week(ui: &Rc<Ui>) {
     match ui.view.get() {
         View::Grid => {
             tracing::debug!(week = %start, events = items.len(), "redrew the week");
+            // The column headings carry the dates, so the header says nothing.
+            ui.week.title().set_text("");
             ui.week.set_items(items);
         }
         View::Month => {
@@ -1447,11 +1460,11 @@ fn refresh_week(ui: &Rc<Ui>) {
             tracing::debug!(events = items.len(), "redrew the agenda");
             // The grid's date range is not this view's range, and leaving it up claims the
             // list stops on Sunday when it runs a month.
-            ui.week.title().set_text(&format!(
-                "{} – {}",
-                from.format("%-d %b"),
-                to.format("%-d %b %Y")
-            ));
+            // The same formatter the grid used, rather than a second one that would drift:
+            // it names both months when a range crosses one, and both years across a year.
+            ui.week
+                .title()
+                .set_text(&week::title_for(from.date_naive(), 30));
             let secondary = ui
                 .settings
                 .borrow()
