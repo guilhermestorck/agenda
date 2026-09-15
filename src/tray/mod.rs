@@ -124,6 +124,9 @@ pub fn next_start(occurrences: &[Occurrence], now: i64) -> Option<i64> {
 /// touch a widget; it posts one of these instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Request {
+    /// Open the compact day view. What a left click does: the question a tray icon is asked
+    /// is "what is next", and answering it should not cost a whole window.
+    ShowDay,
     ToggleWindow,
     Quit,
 }
@@ -163,7 +166,7 @@ impl ksni::Tray for Item {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        let _ = self.requests.send(Request::ToggleWindow);
+        let _ = self.requests.send(Request::ShowDay);
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {

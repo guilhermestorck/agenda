@@ -52,6 +52,8 @@ struct Ui {
     week: Rc<week::Week>,
     agenda: Rc<agenda::List>,
     month: Rc<month::Grid>,
+    /// Built on first use: most sessions never click the tray.
+    day_popup: RefCell<Option<Rc<tray_day::Popup>>>,
     /// Swaps between the time grid and the list views. Only one is ever populated.
     views: gtk::Stack,
     view: Cell<View>,
@@ -141,6 +143,7 @@ fn startup(window: &adw::ApplicationWindow) -> anyhow::Result<gtk::Widget> {
         week: week::Week::new(),
         agenda: agenda::List::new(),
         month: month::Grid::new(),
+        day_popup: RefCell::new(None),
         views: gtk::Stack::new(),
         view: Cell::new(View::Grid),
         needs_reconnect: RefCell::new(HashSet::new()),
@@ -951,6 +954,7 @@ fn start_tray(ui: &Rc<Ui>) {
         let ui = &pump;
         while let Ok(request) = requests.try_recv() {
             match request {
+                tray::Request::ShowDay => show_day(ui),
                 tray::Request::ToggleWindow => toggle_window(ui),
                 tray::Request::Quit => {
                     if let Some(app) = ui
@@ -968,6 +972,63 @@ fn start_tray(ui: &Rc<Ui>) {
     });
 
     refresh_tray(ui);
+}
+
+/// Open the compact day view from the tray.
+///
+/// Built on first use and reused after, so a session that never touches the tray never pays
+/// for it, and one that does keeps the same window rather than stacking new ones.
+fn show_day(ui: &Rc<Ui>) {
+    let existing = ui.day_popup.borrow().clone();
+    let popup = match existing {
+        Some(popup) => popup,
+        None => {
+            let full = ui.clone();
+            let popup = tray_day::Popup::new(move || toggle_window(&full));
+            // The same core band as the main grid: two views of one day that compress
+            // different hours would be two different calendars.
+            popup.grid().set_core_hours(vertical::Core {
+                start: ui.settings.core_hours_start,
+                end: ui.settings.core_hours_end,
+            });
+            popup
+                .grid()
+                .set_display_zone(week::display_zone(ui.settings.timezone.as_deref()));
+            *ui.day_popup.borrow_mut() = Some(popup.clone());
+            popup
+        }
+    };
+
+    if popup.is_visible() {
+        return;
+    }
+    popup.present(
+        tray_day::DEFAULT_BEFORE_HOURS,
+        tray_day::DEFAULT_AFTER_HOURS,
+    );
+    refresh_day_popup(ui, &popup);
+}
+
+/// Fill the popup from the same store and the same rules as the main window, so two views of
+/// the same day cannot disagree.
+fn refresh_day_popup(ui: &Rc<Ui>, popup: &Rc<tray_day::Popup>) {
+    let grid = popup.grid();
+    let zone = grid.zone();
+    let start = grid.start();
+    let Some(from) = zone
+        .from_local_datetime(&start.and_hms_opt(0, 0, 0).expect("midnight exists"))
+        .earliest()
+    else {
+        return;
+    };
+    let to = from + Duration::days(1);
+    match collect_items(ui, from.timestamp(), to.timestamp()) {
+        Ok(items) => {
+            tracing::debug!(day = %start, events = items.len(), "redrew the tray day");
+            grid.set_items(items);
+        }
+        Err(error) => tracing::error!(error = %format!("{error:#}"), "could not read the day"),
+    }
 }
 
 fn toggle_window(ui: &Rc<Ui>) {

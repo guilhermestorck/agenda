@@ -3,6 +3,10 @@
 //! It is the time grid with one column and a bounded vertical window, not a second grid.
 //! What is new here is only which slice of the day opens first.
 
+use adw::prelude::*;
+use chrono::Timelike;
+use gtk::glib;
+
 /// Minutes in a day.
 const DAY: f64 = 24.0 * 60.0;
 
@@ -28,6 +32,125 @@ pub fn window(now_minutes: f64, before_hours: f64, after_hours: f64) -> (f64, f6
     }
 
     (start.max(0.0), (start + span).min(DAY))
+}
+
+/// The compact day view: the time grid at one column, opened from the tray.
+///
+/// A StatusNotifierItem menu is a D-Bus menu and cannot hold a widget, so this is its own
+/// window rather than part of the tray item.
+pub struct Popup {
+    window: adw::Window,
+    grid: std::rc::Rc<super::week::Week>,
+    title: gtk::Label,
+}
+
+impl Popup {
+    pub fn new(open_full: impl Fn() + 'static) -> std::rc::Rc<Self> {
+        let grid = super::week::Week::new();
+        grid.set_span(super::span::Span::Day);
+
+        let title = gtk::Label::new(None);
+        title.add_css_class("heading");
+
+        let header = adw::HeaderBar::new();
+        header.set_title_widget(Some(&title));
+
+        let navigation = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        navigation.add_css_class("linked");
+        let previous = gtk::Button::from_icon_name("go-previous-symbolic");
+        let next = gtk::Button::from_icon_name("go-next-symbolic");
+        navigation.append(&previous);
+        navigation.append(&next);
+        let today = gtk::Button::with_label("Today");
+        header.pack_start(&navigation);
+        header.pack_start(&today);
+
+        let open = gtk::Button::from_icon_name("view-fullscreen-symbolic");
+        open.set_tooltip_text(Some("Open agenda"));
+        header.pack_end(&open);
+
+        let toolbar = adw::ToolbarView::new();
+        toolbar.add_top_bar(&header);
+        toolbar.set_content(Some(grid.widget()));
+
+        let window = adw::Window::builder()
+            .title("agenda")
+            .default_width(420)
+            .default_height(560)
+            .hide_on_close(true)
+            .content(&toolbar)
+            .build();
+
+        let popup = std::rc::Rc::new(Self {
+            window,
+            grid,
+            title,
+        });
+
+        for (button, presses) in [(&previous, -1_i64), (&next, 1)] {
+            let popup = popup.clone();
+            button.connect_clicked(move |_| {
+                popup.grid.shift(presses);
+                popup.refresh_title();
+            });
+        }
+        let clone = popup.clone();
+        today.connect_clicked(move |_| {
+            clone.grid.go_to_today();
+            clone.refresh_title();
+        });
+        let clone = popup.clone();
+        open.connect_clicked(move |_| {
+            clone.window.set_visible(false);
+            open_full();
+        });
+
+        // Escape closes it. Without layer-shell there is no dismissal on focus loss, and a
+        // popup that can only be closed by its title bar is not a popup.
+        let controller = gtk::EventControllerKey::new();
+        let clone = popup.clone();
+        controller.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape {
+                clone.window.set_visible(false);
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        popup.window.add_controller(controller);
+
+        popup
+    }
+
+    pub fn grid(&self) -> &std::rc::Rc<super::week::Week> {
+        &self.grid
+    }
+
+    fn refresh_title(&self) {
+        let day = self.grid.start().format("%A %-d %B").to_string();
+        self.title.set_text(&day);
+        // Distinct from the main window's, so the taskbar and the window switcher can tell
+        // the two apart.
+        self.window.set_title(Some(&format!("agenda — {day}")));
+    }
+
+    /// Show the popup, always on today and always at the current time.
+    ///
+    /// Reopening returns to now rather than to wherever it was last scrolled: the tray is
+    /// asked "what is next", and answering with yesterday afternoon is not an answer.
+    pub fn present(&self, before_hours: f64, after_hours: f64) {
+        self.grid.go_to_today();
+        self.refresh_title();
+        self.window.present();
+
+        let now = chrono::Local::now();
+        let minutes = f64::from(now.hour() * 60 + now.minute());
+        let (start, _) = window(minutes, before_hours, after_hours);
+        self.grid.scroll_to_minute(start);
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.window.is_visible()
+    }
 }
 
 #[cfg(test)]

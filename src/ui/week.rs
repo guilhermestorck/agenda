@@ -67,6 +67,8 @@ pub struct Week {
     zone: Cell<Tz>,
     /// Hour labels, resized when compression changes rather than rebuilt.
     hours: Vec<gtk::Label>,
+    /// Held so a caller can scroll to a given minute of the day through the mapping.
+    scroller: gtk::ScrolledWindow,
     /// The optional second zone's readings, beside the first.
     secondary_hours: Vec<gtk::Label>,
     secondary_axis: gtk::Box,
@@ -215,6 +217,7 @@ impl Week {
             focus,
             span,
             hours,
+            scroller: scroller.clone(),
             secondary_hours,
             secondary_axis,
             secondary_zone: Rc::new(Cell::new(None)),
@@ -304,6 +307,15 @@ impl Week {
         }
         self.grid
             .set_content_height(day_height(&occupied, core) as i32);
+    }
+
+    /// Scroll so `minute` of the day sits at the top.
+    ///
+    /// Measured through the mapping, not multiplied: the hours above may be compressed.
+    pub fn scroll_to_minute(self: &Rc<Self>, minute: f64) {
+        let target = y_for(minute, &self.occupied.borrow(), self.core.get());
+        let adjustment = self.scroller.vadjustment();
+        glib::idle_add_local_once(move || adjustment.set_value(target));
     }
 
     /// Show a second zone's readings beside the hour axis, or none.
