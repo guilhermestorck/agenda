@@ -343,10 +343,16 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
                 }
                 SidebarState::Hidden => split.set_show_sidebar(false),
             }
-            if let Err(error) =
-                crate::config::set_view_state(&ui.view_state, "sidebar", state.key())
-            {
-                tracing::warn!(error = %format!("{error:#}"), "could not remember the sidebar");
+            let mut remembered = vec![("sidebar", state.key())];
+            if state != SidebarState::Hidden {
+                // Remembered separately so the header button knows which visible state to
+                // restore, rather than silently promoting the rail to the full sidebar.
+                remembered.push(("sidebar_last_shown", state.key()));
+            }
+            for (key, value) in remembered {
+                if let Err(error) = crate::config::set_view_state(&ui.view_state, key, value) {
+                    tracing::warn!(error = %format!("{error:#}"), "could not remember the sidebar");
+                }
             }
         })
     };
@@ -364,6 +370,34 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     }
     popover.set_child(Some(&choices));
     kebab.set_popover(Some(&popover));
+
+    // The kebab lives inside the sidebar, so it cannot be the only way back: hiding the
+    // sidebar hides its own control, and the user is stuck. This one is in the header.
+    let reveal = gtk::ToggleButton::new();
+    reveal.set_icon_name("sidebar-show-symbolic");
+    reveal.add_css_class("flat");
+    reveal.set_tooltip_text(Some("Show accounts"));
+    {
+        let apply = apply.clone();
+        let ui = ui.clone();
+        reveal.connect_toggled(move |reveal| {
+            if reveal.is_active() {
+                let restored = crate::config::view_state(&ui.view_state)
+                    .get("sidebar_last_shown")
+                    .and_then(|key| SidebarState::from_key(key))
+                    .filter(|state| *state != SidebarState::Hidden)
+                    .unwrap_or_default();
+                apply(restored);
+            } else {
+                apply(SidebarState::Hidden);
+            }
+        });
+    }
+    split
+        .bind_property("show-sidebar", &reveal, "active")
+        .sync_create()
+        .build();
+    header.pack_start(&reveal);
 
     apply(
         saved
