@@ -771,12 +771,20 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
                     .unwrap_or(DEFAULT_SWATCH)
             }),
         ) {
+            // alpha() colours the border alone. Setting opacity on the widget would fade
+            // its contents with it, and the text has to stay legible.
             css.push_str(&format!(
-                ".card-{} {{ border: 1px solid {color}; border-radius: 8px; padding: 4px 2px; }}\n",
-                crate::ui::week::class_for(color)
+                ".card-{} {{ border: 1px solid alpha({color}, 0.7); border-radius: 8px; \
+                 padding: 3px {}px; }}\n",
+                crate::ui::week::class_for(color),
+                CARD_INSET - 1,
             ));
         }
     }
+    css.push_str(
+        ".sidebar-account { font-size: 1.05em; font-weight: 700; }\n\
+         .sidebar-calendar { font-size: 0.95em; }\n",
+    );
     ui.sidebar_palette.load_from_string(&css);
 
     for (account, calendars) in groups {
@@ -790,12 +798,12 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         ));
         group.set_margin_start(8);
         group.set_margin_end(8);
-        group.set_margin_top(4);
+        group.set_margin_top(6);
 
         let heading = gtk::Box::new(Orientation::Horizontal, 8);
-        heading.set_margin_start(12);
-        heading.set_margin_end(12);
-        heading.set_margin_top(6);
+        heading.set_margin_start(CALENDAR_INDENT);
+        heading.set_margin_end(4);
+        heading.set_margin_bottom(6);
         // No separate colour chip: the card's border already carries the account's colour,
         // and the avatar carries who it is — a picture when one has been fetched, initials
         // otherwise. Two marks for one account was one too many.
@@ -808,7 +816,7 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
                 .or(account.display_name.as_deref())
                 .unwrap_or(&account.email),
         ));
-        name.add_css_class("heading");
+        name.add_css_class("sidebar-account");
         name.set_halign(Align::Start);
         name.set_hexpand(true);
         name.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
@@ -857,9 +865,7 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
 
         for calendar in calendars {
             let row = gtk::Box::new(Orientation::Horizontal, 8);
-            row.set_margin_start(12);
-            row.set_margin_end(8);
-            row.set_margin_top(4);
+            row.set_margin_end(4);
 
             let own = calendar
                 .user_color
@@ -871,14 +877,26 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
             // A calendar that keeps its account's colour needs no outline: the account's
             // card already says what colour its events are. One that has its own does,
             // because otherwise nothing on the row explains why its events look different.
-            if !own.eq_ignore_ascii_case(inherited) {
+            // A carded row is pushed in by its own border and padding, so it starts
+            // further left by exactly that much. Both kinds then put their swatch — and so
+            // their name — on the same vertical line, which is the point: whether a
+            // calendar has its own colour should not move its label.
+            // Vertical spacing is evened out the same way: a carded row already carries
+            // 3px of padding and a 1px border above it, so it takes that much less margin.
+            // Otherwise the gaps between rows breathe differently depending on colour.
+            const ROW_GAP: i32 = 6;
+            if own.eq_ignore_ascii_case(inherited) {
+                row.set_margin_start(CALENDAR_INDENT + CARD_INSET);
+                row.set_margin_top(ROW_GAP);
+            } else {
                 row.add_css_class(&format!("card-{}", crate::ui::week::class_for(own)));
-                row.set_margin_start(16);
-                row.set_margin_top(6);
+                row.set_margin_start(CALENDAR_INDENT);
+                row.set_margin_top(ROW_GAP - 4);
             }
             row.append(&swatch(Some(own)));
 
             let label = gtk::Label::new(Some(&calendar.summary));
+            label.add_css_class("sidebar-calendar");
             label.set_halign(Align::Start);
             label.set_hexpand(true);
             label.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -914,6 +932,16 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
 
 /// The colour a card falls back to when neither the calendar nor its account has one.
 const DEFAULT_SWATCH: &str = "#3584e4";
+
+/// A card's own border and padding, in pixels.
+///
+/// The number matters because a carded row's content is pushed in by exactly this much. A
+/// row without a card has to be indented by the same amount by hand, or the calendar names
+/// sit on two different vertical lines depending on whether their colour happens to differ
+/// from their account's — which is a detail the reader should never have to notice.
+const CARD_INSET: i32 = 7;
+/// Where a calendar row's content starts, measured from the account card's inner edge.
+const CALENDAR_INDENT: i32 = 8;
 
 /// A read-only colour chip. The sidebar shows which colour a calendar is; changing it is
 /// Preferences' business.
