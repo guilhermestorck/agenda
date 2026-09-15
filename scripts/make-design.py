@@ -22,11 +22,15 @@ W, H      = 1160, 800
 SIDEBAR   = 280
 HEADER_H  = 46
 
+# The fixture's four accounts, so the mockups show what the app actually shows.
 ACCOUNTS = [
     ("work",     "#e66100", "W", ["Guilherme (work)", "On-call rota", "Team platform", "Travel"]),
     ("personal", "#3584e4", "P", ["Personal", "Birthdays", "Health", "Holidays in Spain"]),
     ("side",     "#33d17a", "S", ["Side projects", "Clients", "OSS releases"]),
+    ("family",   "#c061cb", "F", ["Family"]),
 ]
+
+SPANS = ["Day", "3 days", "Work week", "Week", "Month", "Agenda"]
 
 def esc(text):
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -64,19 +68,27 @@ def to_svg(item):
 def chrome(title, span_label="Week"):
     """Header bar shared by every main view."""
     out = [rect(0, 0, W, H, BG), rect(0, 0, W, HEADER_H, HEADER)]
+    # Left group, in pack order: sync, preferences, sidebar toggle. The menu that used to
+    # sit on the right is gone — the cog replaced it.
     out.append(text(24, 29, "⟳", DIM, 15))
-    out.append(text(56, 29, "◧", DIM, 15))
+    out.append(text(56, 29, "⚙", DIM, 15))
+    out.append(text(88, 29, "◧", DIM, 15))
     out.append(text(W // 2, 29, title, TEXT, 13, 500, "middle"))
-    out.append(rect(742, 10, 84, 26, SURFACE, 6))
+    # Right group: the span switcher, Today, then previous/next.
+    out.append(rect(742, 10, 96, 26, SURFACE, 6))
     out.append(text(752, 28, span_label, TEXT, 12))
-    out.append(text(816, 28, "▾", DIM, 10))
-    out.append(rect(836, 10, 66, 26, SURFACE, 6))
-    out.append(text(848, 28, "Today", TEXT, 12))
-    out.append(rect(910, 10, 64, 26, SURFACE, 6))
-    out.append(text(926, 28, "‹", TEXT, 14))
-    out.append(text(958, 28, "›", TEXT, 14))
-    out.append(text(716, 29, "☰", DIM, 14))
+    out.append(text(828, 28, "▾", DIM, 10))
+    out.append(rect(848, 10, 60, 26, SURFACE, 6))
+    out.append(text(860, 28, "Today", TEXT, 12))
+    out.append(rect(918, 10, 64, 26, SURFACE, 6))
+    out.append(text(934, 28, "‹", TEXT, 14))
+    out.append(text(966, 28, "›", TEXT, 14))
     return out
+
+def scrollbars(top):
+    """Both bars keep their place in the layout rather than fading out."""
+    return [rect(SIDEBAR + 60, H - 10, W - SIDEBAR - 200, 6, "#ffffff33", 3),
+            rect(W - 10, top, 6, 260, "#ffffff33", 3)]
 
 def sidebar(hidden_calendar=None):
     """View-only: swatch, avatar, name, and the hover eye."""
@@ -87,6 +99,7 @@ def sidebar(hidden_calendar=None):
         out.append(circle(52, y - 4, 11, color))
         out.append(text(52, y, initial, "#ffffff", 11, 500, "middle"))
         out.append(text(72, y, name, TEXT, 13, 500))
+        # Revealed on hover, so most rows show nothing; drawn here to say where it lands.
         out.append(text(252, y, "\U0001f441", DIM, 12))
         y += 22
         out.append(text(72, y, "Needs reconnecting", ERROR, 11))
@@ -112,27 +125,53 @@ def week_view():
         out.append(text(x + col / 2, HEADER_H + 26, day.split()[0], ACCENT if index == 1 else TEXT, 12, 500, "middle"))
         out.append(text(x + col / 2, HEADER_H + 42, day.split()[1] + " Sep", DIM, 10, 400, "middle"))
         out.append(line(x, HEADER_H + 54, x, H))
-    out.append(rect(SIDEBAR, HEADER_H + 54, W - SIDEBAR, 44, BG))
-    out.append(rect(grid_x + 4, HEADER_H + 62, col - 8, 16, "#3584e4", 3))
-    out.append(text(grid_x + 10, HEADER_H + 74, "Fiesta local", "#ffffff", 9))
+    # The all-day band: its own strip above the hour axis, holding several rows at once,
+    # and a fixed height so the grid below does not shift as days change.
+    band_top = HEADER_H + 54
+    out.append(rect(SIDEBAR, band_top, W - SIDEBAR, 76, BG))
+    all_day = [
+        (2, 1, "Fiesta local", "#3584e4", 0),
+        (3, 3, "DevConf Barcelona", "#e66100", 0),
+        (6, 1, "Ana's birthday", "#3584e4", 0),
+        (6, 1, "Día de la Comunidad", "#3584e4", 1),
+        (6, 1, "Sierra weekend", "#c061cb", 2),
+        (6, 1, "On-call: Guilherme", "#e66100", 3),
+    ]
+    for day_index, days_wide, label, colour, row in all_day:
+        x = grid_x + day_index * col + 2
+        out.append(rect(x, band_top + 4 + row * 19, col * days_wide - 6, 16, colour, 3))
+        out.append(text(x + 6, band_top + 16 + row * 19, label, "#ffffff", 9))
 
     # Compressed quiet hours above, full height inside the core band.
-    y = HEADER_H + 110
+    y = HEADER_H + 142
     for hour in range(7, 20):
         tall = 8 <= hour < 22
         height = 40 if tall else 20
         out.append(line(SIDEBAR, y, W, y))
         out.append(text(SIDEBAR + 44, y + 12, f"{hour:02}:00", DIM, 10, 400, "end"))
         y += height
-    events = [(0, 150, 34, "Sprint planning", "#e66100"), (1, 120, 26, "Design review", "#e66100"),
-              (2, 190, 30, "CI window (UTC)", "#33d17a"), (4, 240, 26, "Client call", "#33d17a"),
-              (1, 300, 22, "Piano lesson", "#c061cb")]
+    # Enough to read like a real week: overlaps, a span of consecutive days, the early
+    # meeting that keeps its hour uncompressed.
+    events = [
+        (0, 10, 22, "语言 class", "#3584e4"), (0, 10, 46, "Airport transfer", "#9a9996"),
+        (1, 10, 22, "Gym", "#3584e4"), (3, 10, 40, "Gym", "#3584e4"),
+        (0, 70, 16, "Daily standup", "#e66100"), (1, 62, 16, "Deploy ack", "#e66100"),
+        (2, 70, 16, "Daily standup", "#e66100"), (4, 78, 16, "Daily standup (moved)", "#e66100"),
+        (0, 96, 44, "Sprint planning", "#e66100"), (1, 96, 30, "Design review", "#e66100"),
+        (1, 130, 24, "Dentist", "#3584e4"), (2, 100, 34, "CI window (UTC)", "#33d17a"),
+        (4, 118, 20, "Release sync (Tokyo)", "#33d17a"), (1, 168, 18, "Coffee sync", "#3584e4"),
+        (2, 240, 34, "Quarterly cross-functional", "#e66100"), (3, 240, 26, "Quarterly", "#3584e4"),
+        (5, 268, 26, "Client call — São Paulo", "#33d17a"),
+        (1, 300, 24, "Incident postmortem", "#e66100"), (2, 316, 22, "Piano lesson", "#c061cb"),
+        (0, 352, 18, "Pick-up", "#c061cb"), (2, 380, 30, "Offsite retro", "#33d17a"),
+    ]
     for day_index, offset, height, label, color in events:
         x = grid_x + day_index * col + 3
-        top = HEADER_H + 110 + offset
+        top = HEADER_H + 142 + offset
         out.append(rect(x, top - 10, col - 8, 10, color, 3, opacity=0.28))
         out.append(rect(x, top, col - 8, height, color, 3))
         out.append(text(x + 6, top + 13, label, "#ffffff", 10))
+    out += scrollbars(HEADER_H + 200)
     return out
 
 def month_view():
@@ -193,9 +232,16 @@ def preferences(page):
     if page == "settings":
         groups = [("Time zones", [("Display time zone", "Europe/Madrid"),
                                   ("Second time zone", "America/New_York")]),
-                  ("Working hours", [("Day starts", "8"), ("Day ends", "22")])]
+                  ("Working hours", [("Day starts", "8"), ("Day ends", "22")]),
+                  # The three sidebar states live here now: the header button only covers
+                  # two of them, so the third needs naming somewhere.
+                  ("Sidebar", [("Show", "Accounts and calendars")])]
     else:
-        groups = [("work — work@example.com", [(c, "") for c in ACCOUNTS[0][3]]),
+        out.append(rect(32, y - 24, 150, 30, "#3584e4", 6))
+        out.append(text(52, y - 4, "Connect account", "#ffffff", 12))
+        y += 28
+        groups = [("work — work@example.com",
+                   [("Needs reconnecting", "Reconnect")] + [(c, "") for c in ACCOUNTS[0][3]]),
                   ("personal — personal@example.com", [(c, "") for c in ACCOUNTS[1][3]])]
     for title, rows in groups:
         out.append(text(40, y, title, TEXT, 12, 500))
