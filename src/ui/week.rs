@@ -253,7 +253,10 @@ impl Week {
             code.add_css_class("dim-label");
             // A step below the dates: this labels the axis rather than competing with it.
             code.add_css_class("caption");
-            code.set_size_request(AXIS_WIDTH, -1);
+            // The axis width *less* the gap, because the margin sits outside the label:
+            // at the full width the code's cell was AXIS_WIDTH + AXIS_GAP and its text
+            // landed a gap's width right of the hour it names.
+            code.set_size_request(AXIS_WIDTH - AXIS_GAP, -1);
             code.set_valign(Align::Center);
             // Right-aligned to sit over the hours it names, which are right-aligned against
             // the grid. xalign, not halign: the label is given the axis's full width, so
