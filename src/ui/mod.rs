@@ -429,6 +429,18 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
         })
     };
 
+    // The toggle drives `apply`, and the split drives the toggle back, so the button cannot
+    // drift out of step with what the swipe gesture or the breakpoint did. Removing the rail
+    // took this wiring with it and left the button inert.
+    {
+        let apply = apply.clone();
+        reveal.connect_toggled(move |button| apply(button.is_active()));
+    }
+    split
+        .bind_property("show-sidebar", &reveal, "active")
+        .sync_create()
+        .build();
+
     apply(saved.get("sidebar").map(String::as_str) != Some("hidden"));
 
     // A window too narrow for the sidebar collapses it to an overlay rather than crushing
