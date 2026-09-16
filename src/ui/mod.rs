@@ -194,6 +194,45 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     reveal.set_tooltip_text(Some("Show accounts"));
     header.pack_start(&reveal);
 
+    // Collapses every account at once, or expands them if any are already collapsed. The
+    // same pan carets the accounts carry, so the button shows the action it will take.
+    let fold_all = gtk::Button::from_icon_name("pan-down-symbolic");
+    fold_all.add_css_class("flat");
+    fold_all.set_tooltip_text(Some("Collapse or expand every account"));
+    {
+        let ui = ui.clone();
+        fold_all.connect_clicked(move |button| {
+            let Ok(groups) = read_groups(&ui) else {
+                return;
+            };
+            let state = crate::config::view_state(&ui.view_state);
+            // Collapse unless everything already is, in which case expand — one button for
+            // both directions, doing whichever leaves the sidebar different from now.
+            let any_open = groups.iter().any(|(account, _)| {
+                state
+                    .get(&format!("collapsed:{}", account.email))
+                    .map(String::as_str)
+                    != Some("1")
+            });
+            for (account, _) in &groups {
+                if let Err(error) = crate::config::set_view_state(
+                    &ui.view_state,
+                    &format!("collapsed:{}", account.email),
+                    if any_open { "1" } else { "0" },
+                ) {
+                    tracing::warn!(error = %format!("{error:#}"), "could not remember an account");
+                }
+            }
+            button.set_icon_name(if any_open {
+                "pan-end-symbolic"
+            } else {
+                "pan-down-symbolic"
+            });
+            refresh_sidebar(&ui);
+        });
+    }
+    header.pack_start(&fold_all);
+
     header.pack_start(&ui.sync_button);
 
     // The date range, when a view needs one. Week and day carry their dates in the column
@@ -704,8 +743,29 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         group.set_margin_top(6);
 
         let heading = gtk::Box::new(Orientation::Horizontal, 8);
-        heading.set_margin_start(PADDING);
-        heading.set_margin_end(4);
+        heading.add_css_class("sidebar-row");
+
+        // Collapsing an account hides its calendars, not the account itself: with four
+        // accounts and sixteen calendars the sidebar is mostly a list of things you are not
+        // currently thinking about.
+        let key = format!("collapsed:{}", account.email);
+        let collapsed = crate::config::view_state(&ui.view_state)
+            .get(&key)
+            .map(String::as_str)
+            == Some("1");
+        let caret = gtk::Button::from_icon_name(if collapsed {
+            "pan-end-symbolic"
+        } else {
+            "pan-down-symbolic"
+        });
+        caret.add_css_class("flat");
+        caret.set_valign(Align::Center);
+        caret.set_tooltip_text(Some(if collapsed {
+            "Show this account's calendars"
+        } else {
+            "Hide this account's calendars"
+        }));
+        heading.append(&caret);
         // Less the row's own top padding, so the *visible* gap is the 12px asked for rather
         // than 12 plus however much padding the row happens to carry.
         heading.set_margin_bottom(ACCOUNT_TO_CALENDARS - PADDING);
@@ -752,6 +812,36 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         heading.append(&eye);
         group.append(&heading);
 
+        // The calendars live in their own box so the caret has one thing to toggle.
+        let calendar_list = gtk::Box::new(Orientation::Vertical, 0);
+        calendar_list.set_visible(!collapsed);
+        {
+            let ui = ui.clone();
+            let list = calendar_list.clone();
+            let caret_clone = caret.clone();
+            caret.connect_clicked(move |_| {
+                let showing = !list.is_visible();
+                list.set_visible(showing);
+                caret_clone.set_icon_name(if showing {
+                    "pan-down-symbolic"
+                } else {
+                    "pan-end-symbolic"
+                });
+                caret_clone.set_tooltip_text(Some(if showing {
+                    "Hide this account's calendars"
+                } else {
+                    "Show this account's calendars"
+                }));
+                if let Err(error) = crate::config::set_view_state(
+                    &ui.view_state,
+                    &key,
+                    if showing { "0" } else { "1" },
+                ) {
+                    tracing::warn!(error = %format!("{error:#}"), "could not remember the account");
+                }
+            });
+        }
+
         if ui.needs_reconnect.borrow().contains(&account.email) {
             // An icon beside the name rather than a line of its own: the state is about this
             // account, and a whole row of red for it crowded the sidebar. Read-only — fixing
@@ -771,7 +861,6 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         for (index, calendar) in calendars.into_iter().enumerate() {
             let first = index == 0;
             let row = gtk::Box::new(Orientation::Horizontal, 8);
-            row.set_margin_end(PADDING);
 
             let own = calendar
                 .user_color
@@ -794,7 +883,6 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
             if !own.eq_ignore_ascii_case(inherited) {
                 row.add_css_class(&format!("card-{}", crate::ui::week::class_for(own)));
             }
-            row.set_margin_start(0);
             row.set_margin_top(if first { 0 } else { ROW_GAP });
             row.append(&swatch(Some(own)));
 
@@ -827,8 +915,9 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
             reveal_on_hover(&row, &eye);
             row.append(&eye);
 
-            group.append(&row);
+            calendar_list.append(&row);
         }
+        group.append(&calendar_list);
         ui.sidebar.append(&group);
     }
 }
