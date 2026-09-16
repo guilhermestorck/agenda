@@ -73,6 +73,8 @@ pub struct Week {
     /// Held so a caller can scroll to a given minute of the day through the mapping.
     scroller: gtk::ScrolledWindow,
     header_spacer: gtk::Box,
+    primary_code: gtk::Label,
+    secondary_code: gtk::Label,
     all_day_spacer: gtk::Box,
     /// The optional second zone's readings, beside the first.
     secondary_hours: Vec<gtk::Label>,
@@ -97,8 +99,13 @@ impl Week {
             .map(|_| {
                 let label = gtk::Label::new(None);
                 label.set_hexpand(true);
-                label.set_margin_top(6);
-                label.set_margin_bottom(6);
+                label.set_margin_top(4);
+                label.set_margin_bottom(4);
+                // Both lines centred as one block, and the block centred in the row —
+                // otherwise the weekday and its date sit off to one side of each other.
+                label.set_justify(gtk::Justification::Center);
+                label.set_valign(Align::Center);
+                label.set_halign(Align::Center);
                 label
             })
             .collect();
@@ -132,7 +139,7 @@ impl Week {
             label.add_css_class("caption");
             label.set_valign(Align::Start);
             label.set_halign(Align::End);
-            label.set_margin_end(6);
+            label.set_margin_end(2);
             label.set_size_request(-1, HOUR_HEIGHT as i32);
             secondary_axis.append(&label);
             secondary_hours.push(label);
@@ -147,7 +154,7 @@ impl Week {
             label.add_css_class("caption");
             label.set_valign(Align::Start);
             label.set_halign(Align::End);
-            label.set_margin_end(6);
+            label.set_margin_end(2);
             label.set_size_request(-1, HOUR_HEIGHT as i32);
             axis.append(&label);
             hours.push(label);
@@ -235,9 +242,25 @@ impl Week {
         });
 
         // Both rows are inset by the axis columns so their days line up with the grid's.
+        // The zone codes sit over the columns they label. Without them a second hour axis
+        // is two sets of numbers with nothing saying which is which.
+        let zone_codes = gtk::Box::new(Orientation::Horizontal, 0);
+        let secondary_code = gtk::Label::new(None);
+        let primary_code = gtk::Label::new(None);
+        for code in [&secondary_code, &primary_code] {
+            code.add_css_class("dim-label");
+            // A step below the dates: this labels the axis rather than competing with it.
+            code.add_css_class("caption");
+            code.set_size_request(AXIS_WIDTH, -1);
+            code.set_valign(Align::Center);
+            zone_codes.append(code);
+        }
+        secondary_code.set_visible(false);
+
         let header_line = gtk::Box::new(Orientation::Horizontal, 0);
         let header_spacer = gtk::Box::new(Orientation::Horizontal, 0);
-        header_spacer.set_size_request(AXIS_WIDTH, -1);
+        header_spacer.set_size_request(0, -1);
+        header_line.append(&zone_codes);
         header_line.append(&header_spacer);
         header_line.append(&header_scroller);
 
@@ -277,6 +300,8 @@ impl Week {
             hours,
             scroller: scroller.clone(),
             header_spacer,
+            primary_code,
+            secondary_code,
             all_day_spacer,
             secondary_hours,
             secondary_axis,
@@ -623,6 +648,20 @@ impl Week {
             }
         }
 
+        // The abbreviations for the day being shown, since they change with the season.
+        let noon = start.and_hms_opt(12, 0, 0);
+        let code_in = |zone: Tz| -> String {
+            use chrono::TimeZone;
+            noon.and_then(|naive| zone.from_local_datetime(&naive).earliest())
+                .map(|instant| instant.format("%Z").to_string())
+                .unwrap_or_default()
+        };
+        self.primary_code.set_text(&code_in(self.zone.get()));
+        self.secondary_code
+            .set_visible(self.secondary_zone.get().is_some());
+        if let Some(other) = self.secondary_zone.get() {
+            self.secondary_code.set_text(&code_in(other));
+        }
         if let Some(other) = self.secondary_zone.get() {
             // Recomputed for the displayed day, because the gap between two zones changes
             // partway through the days when one leaves summer time before the other.

@@ -377,10 +377,12 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     // adw handles collapsing, the overlay and the swipe gesture. Hand-rolling any of that
     // over a gtk::Box was the previous arrangement and could not hide the sidebar at all.
     if let Some(display) = gtk::gdk::Display::default() {
+        // USER rather than APPLICATION: libadwaita installs its own stylesheet above
+        // APPLICATION, so rules here lost to `avatar.colorN` however they were written.
         gtk::style_context_add_provider_for_display(
             &display,
             &ui.sidebar_palette,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            gtk::STYLE_PROVIDER_PRIORITY_USER,
         );
     }
 
@@ -697,7 +699,9 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
             css.push_str(&format!(
                 ".card-{} {{ border: 1px solid alpha({color}, 0.5); \
                  background-color: alpha({color}, 0.3); border-radius: 8px; \
-                 padding: {ROW_PADDING}px {PADDING}px; }}\n",
+                 padding: {ROW_PADDING}px {PADDING}px; }}\n\
+                 .account-card-{} {{ padding: {PADDING}px {CARD_EDGE}px; }}\n",
+                crate::ui::week::class_for(color),
                 crate::ui::week::class_for(color),
             ));
         }
@@ -712,11 +716,8 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
             // On the avatar node itself: adw draws its generated fill there as a
             // background-image, and a child selector matches nothing. border-radius keeps
             // it round, since replacing the background otherwise leaves a square.
-            // Only the gradient is dropped. Forcing the account's colour here does not
-            // take — adw keeps painting its own generated fill whatever this rule says, and
-            // two attempts at out-specifying it changed nothing — so the avatar stays
-            // adw's colour, flat. The card's border carries the account colour anyway.
-            ".avatar-{cls} {{ background-image: none; }}\n",
+            ".flat-avatar.avatar-{cls} {{ background-color: {color}; color: #ffffff; \
+             border-radius: 9999px; font-weight: bold; }}\n",
             cls = crate::ui::week::class_for(color),
         ));
     }
@@ -725,25 +726,27 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         ".sidebar-account {{ font-size: 1.05em; font-weight: 700; }}\n\
          .sidebar-calendar {{ font-size: 0.95em; }}\n\
          .sidebar-row {{ border: 1px solid transparent; border-radius: 8px; \
-          padding: {ROW_PADDING}px {PADDING}px; }}\n"
+          padding: {ROW_PADDING}px {PADDING}px; }}\n\
+         .account-heading {{ padding: 0; }}\n"
     ));
     ui.sidebar_palette.load_from_string(&css);
 
     for (account, calendars) in groups {
         let group = gtk::Box::new(Orientation::Vertical, 0);
-        group.set_margin_bottom(10);
+        group.set_margin_bottom(CARD_EDGE);
         // The account's block is a card outlined in its own colour, so where one account
         // ends and the next begins is visible rather than inferred from whitespace.
-        group.add_css_class(&format!(
-            "card-{}",
-            crate::ui::week::class_for(account.color.as_deref().unwrap_or(DEFAULT_SWATCH))
-        ));
+        let account_class =
+            crate::ui::week::class_for(account.color.as_deref().unwrap_or(DEFAULT_SWATCH));
+        group.add_css_class(&format!("card-{account_class}"));
+        // Wider top and bottom, tighter sides, so the caret and the icons sit close to the
+        // border while the calendars below still breathe.
+        group.add_css_class(&format!("account-card-{account_class}"));
         group.set_margin_start(8);
         group.set_margin_end(8);
-        group.set_margin_top(6);
 
         let heading = gtk::Box::new(Orientation::Horizontal, 8);
-        heading.add_css_class("sidebar-row");
+        heading.add_css_class("account-heading");
 
         // Collapsing an account hides its calendars, not the account itself: with four
         // accounts and sixteen calendars the sidebar is mostly a list of things you are not
@@ -927,6 +930,8 @@ const DEFAULT_SWATCH: &str = "#3584e4";
 
 /// The sidebar's default padding.
 const PADDING: i32 = 8;
+/// How far a card's own controls sit from its border.
+const CARD_EDGE: i32 = 4;
 /// The gap between an account's name and its first calendar.
 const ACCOUNT_TO_CALENDARS: i32 = 12;
 /// The gap between one calendar row and the next.
@@ -1634,34 +1639,48 @@ fn collect_items(ui: &Rc<Ui>, from: i64, to: i64) -> anyhow::Result<Vec<week::It
 ///
 /// Falling back rather than waiting: a cache that is not there yet is a monogram, never a
 /// blank space and never a network call from a paint.
-pub fn avatar_for(account: &crate::store::Account, size: i32) -> adw::Avatar {
+pub fn avatar_for(account: &crate::store::Account, size: i32) -> gtk::Widget {
     let shown = account
         .label
         .as_deref()
         .or(account.display_name.as_deref())
         .unwrap_or(&account.email);
-    let avatar = adw::Avatar::new(size, Some(shown), true);
-    // adw::Avatar's generated background is a gradient, which reads as a shadow at this
-    // size and beside the flat swatches. A plain fill in the account's own colour is both
-    // calmer and more informative. Only for initials — a fetched picture replaces it.
-    avatar.add_css_class("flat-avatar");
-    if let Some(color) = account.color.as_deref() {
-        avatar.add_css_class(&format!("avatar-{}", crate::ui::week::class_for(color)));
-    }
-    avatar.set_valign(Align::Center);
 
-    if let Ok(paths) = Paths::from_env() {
-        let path = paths.avatar(&account.email);
-        if path.exists() {
-            match gtk::gdk::Texture::from_filename(&path) {
-                Ok(texture) => avatar.set_custom_image(Some(&texture)),
-                Err(error) => {
-                    tracing::warn!(%error, path = %path.display(), "could not read a cached avatar")
-                }
+    let cached = Paths::from_env()
+        .ok()
+        .map(|paths| paths.avatar(&account.email));
+    if let Some(path) = cached.filter(|path| path.exists()) {
+        match gtk::gdk::Texture::from_filename(&path) {
+            Ok(texture) => {
+                let avatar = adw::Avatar::new(size, Some(shown), true);
+                avatar.set_custom_image(Some(&texture));
+                avatar.set_valign(Align::Center);
+                return avatar.upcast();
+            }
+            Err(error) => {
+                tracing::warn!(%error, path = %path.display(), "could not read a cached avatar")
             }
         }
     }
-    avatar
+
+    // Drawn here rather than left to adw::Avatar, whose generated fill is a gradient that
+    // reads as a shadow at this size. Five attempts to override it in CSS all lost to its
+    // own `avatar.colorN` rule — at matching specificity and above its priority — so the
+    // fallback is a plain circle instead of a fight with the stylesheet.
+    let initials: String = shown
+        .split_whitespace()
+        .filter_map(|word| word.chars().next())
+        .take(2)
+        .collect::<String>()
+        .to_uppercase();
+    let label = gtk::Label::new(Some(if initials.is_empty() { "?" } else { &initials }));
+    label.set_size_request(size, size);
+    label.set_valign(Align::Center);
+    label.add_css_class("flat-avatar");
+    if let Some(color) = account.color.as_deref() {
+        label.add_css_class(&format!("avatar-{}", crate::ui::week::class_for(color)));
+    }
+    label.upcast()
 }
 
 /// `#RRGGBB` for a colour the user picked. Alpha is dropped: a translucent event on a
