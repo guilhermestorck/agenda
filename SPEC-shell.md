@@ -16,10 +16,11 @@ Replacing the `Box` with it covers two of the three states. Only the icon rail i
 
 ## Success criteria
 
-1. **Three states**: expanded (280px), icon rail, hidden. The grid takes the freed width in
-   each.
-2. **The rail shows account avatars and calendar colour dots**, enough to see who is on
-   screen and toggle a calendar without expanding.
+1. **Two states**: shown (280px) and hidden. The grid takes the freed width.
+   ~~Three states, with an icon rail between them.~~ **Removed 2026-09-16 at the user's
+   request** — along with the preference that named it. A third state nobody reached for was
+   a menu, a stored value and a stack to keep in step, for a width between "enough" and
+   "none".
 3. **The state survives a restart.**
 4. **Narrow windows collapse automatically** via `adw::Breakpoint`, and the user's explicit
    choice wins over the automatic one until the window is resized again.
@@ -47,11 +48,6 @@ state the user has to discover.
 
 ## Resolved
 
-1. **State is chosen from a kebab menu** at the top of the sidebar, not a cycling button.
-   Three states do not fit one toggle, and a menu names each state instead of making the
-   user discover it by pressing repeatedly.
-2. **The rail shows account avatars only.** Calendar visibility needs the expanded sidebar.
-   Sixteen calendar dots is not a rail, it is a second scrolling list.
-
-Criterion 7 still binds: an account needing re-auth must be visible in the rail, so the
-avatar itself carries that state.
+1. ~~State is chosen from a kebab menu.~~ With two states left, the header toggle is the
+   whole control and the menu is gone.
+2. ~~The rail shows account avatars only.~~ There is no rail.

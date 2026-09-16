@@ -54,14 +54,12 @@ pub struct Current<'a> {
     pub secondary: Option<&'a str>,
     pub core_start: u32,
     pub core_end: u32,
-    pub sidebar_state: &'a str,
 }
 
 pub fn dialog(
     current: Current<'_>,
     accounts: &adw::PreferencesPage,
     on_change: impl Fn(&str, Option<String>) + Clone + 'static,
-    on_sidebar: impl Fn(&str) + 'static,
 ) -> adw::PreferencesDialog {
     let page = adw::PreferencesPage::new();
     page.set_title("Settings");
@@ -99,34 +97,8 @@ pub fn dialog(
     hours.add(&start);
     hours.add(&end);
 
-    // The sidebar has three states and the header button only toggles two of them, so the
-    // third needs naming somewhere. It is a preference, and this is where preferences live.
-    let view = adw::PreferencesGroup::new();
-    view.set_title("Sidebar");
-    let states = [
-        ("expanded", "Accounts and calendars"),
-        ("rail", "Accounts only"),
-        ("hidden", "Hidden"),
-    ];
-    let sidebar = adw::ComboRow::new();
-    sidebar.set_title("Show");
-    sidebar.set_model(Some(&gtk::StringList::new(&states.map(|(_, label)| label))));
-    sidebar.set_selected(
-        states
-            .iter()
-            .position(|(key, _)| *key == current.sidebar_state)
-            .unwrap_or(0) as u32,
-    );
-    sidebar.connect_selected_notify(move |row| {
-        if let Some((key, _)) = states.get(row.selected() as usize) {
-            on_sidebar(key);
-        }
-    });
-    view.add(&sidebar);
-
     page.add(&zones);
     page.add(&hours);
-    page.add(&view);
 
     {
         let on_change = on_change.clone();

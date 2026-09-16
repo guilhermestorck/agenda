@@ -44,10 +44,6 @@ struct Ui {
     store: Arc<Mutex<Store>>,
     credentials: Credentials,
     sidebar: gtk::Box,
-    /// Account avatars only. Sixteen calendar dots is not a rail, it is a second list.
-    rail: gtk::Box,
-    /// Which of the two the sidebar is currently showing.
-    sidebar_stack: gtk::Stack,
     /// Border colours for the account and calendar cards, rebuilt with the sidebar.
     sidebar_palette: gtk::CssProvider,
     toasts: adw::ToastOverlay,
@@ -137,8 +133,6 @@ fn startup(window: &adw::ApplicationWindow) -> anyhow::Result<gtk::Widget> {
         store,
         credentials,
         sidebar: gtk::Box::new(Orientation::Vertical, 0),
-        rail: gtk::Box::new(Orientation::Vertical, 6),
-        sidebar_stack: gtk::Stack::new(),
         sidebar_palette: gtk::CssProvider::new(),
         toasts: adw::ToastOverlay::new(),
         connect_button: gtk::Button::with_label("Connect account"),
@@ -209,6 +203,26 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     let cog = gtk::Button::from_icon_name("emblem-system-symbolic");
     cog.add_css_class("flat");
     cog.set_tooltip_text(Some("Preferences"));
+    {
+        let ui = ui.clone();
+        cog.connect_clicked(move |button| {
+            let settings = ui.settings.borrow();
+            let applied = ui.clone();
+            let accounts = accounts_page(&ui);
+            let dialog = preferences::dialog(
+                preferences::Current {
+                    timezone: settings.timezone.as_deref(),
+                    secondary: settings.secondary_timezone.as_deref(),
+                    core_start: settings.core_hours_start,
+                    core_end: settings.core_hours_end,
+                },
+                &accounts,
+                move |key, value| apply_setting(&applied, key, value),
+            );
+            drop(settings);
+            dialog.present(Some(button));
+        });
+    }
 
     let previous = gtk::Button::from_icon_name("go-previous-symbolic");
     let next = gtk::Button::from_icon_name("go-next-symbolic");
@@ -323,14 +337,6 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
 
     // adw handles collapsing, the overlay and the swipe gesture. Hand-rolling any of that
     // over a gtk::Box was the previous arrangement and could not hide the sidebar at all.
-    let rail_scroll = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .child(&ui.rail)
-        .build();
-    ui.rail.set_margin_top(6);
-    ui.rail.set_margin_bottom(6);
-    ui.rail.set_halign(Align::Center);
-
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,
@@ -339,14 +345,10 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
         );
     }
 
-    ui.sidebar_stack.add_named(&sidebar_scroll, Some("full"));
-    ui.sidebar_stack.add_named(&rail_scroll, Some("rail"));
-    ui.sidebar_stack.set_vexpand(true);
-
     // Nothing but the view. Connect account moved to Preferences → Accounts, sync to the
     // header: both act on accounts rather than describing them.
     let sidebar_root = gtk::Box::new(Orientation::Vertical, 0);
-    sidebar_root.append(&ui.sidebar_stack);
+    sidebar_root.append(&sidebar_scroll);
 
     ui.views.add_named(ui.week.widget(), Some("grid"));
     ui.views.add_named(ui.month.widget(), Some("month"));
@@ -368,116 +370,24 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
 
     // Three states do not fit one toggle button: its meaning would change on every press
     // and there would be no way to skip a state. The menu names each one instead.
-    let popover = gtk::Popover::new();
-    let choices = gtk::Box::new(Orientation::Vertical, 0);
+    // Shown or hidden. There is no third state now, so this is a boolean the toggle and
+    // the breakpoint both drive, rather than an enum with a menu behind it.
     let apply = {
         let split = split.clone();
         let ui = ui.clone();
-        std::rc::Rc::new(move |state: SidebarState| {
-            match state {
-                SidebarState::Expanded => {
-                    split.set_show_sidebar(true);
-                    split.set_min_sidebar_width(280.0);
-                    split.set_max_sidebar_width(320.0);
-                    ui.sidebar_stack.set_visible_child_name("full");
-                }
-                SidebarState::Rail => {
-                    split.set_show_sidebar(true);
-                    split.set_min_sidebar_width(RAIL_WIDTH);
-                    split.set_max_sidebar_width(RAIL_WIDTH);
-                    ui.sidebar_stack.set_visible_child_name("rail");
-                }
-                SidebarState::Hidden => split.set_show_sidebar(false),
-            }
-            let mut remembered = vec![("sidebar", state.key())];
-            if state != SidebarState::Hidden {
-                // Remembered separately so the header button knows which visible state to
-                // restore, rather than silently promoting the rail to the full sidebar.
-                remembered.push(("sidebar_last_shown", state.key()));
-            }
-            for (key, value) in remembered {
-                if let Err(error) = crate::config::set_view_state(&ui.view_state, key, value) {
-                    tracing::warn!(error = %format!("{error:#}"), "could not remember the sidebar");
-                }
+        std::rc::Rc::new(move |shown: bool| {
+            split.set_show_sidebar(shown);
+            if let Err(error) = crate::config::set_view_state(
+                &ui.view_state,
+                "sidebar",
+                if shown { "shown" } else { "hidden" },
+            ) {
+                tracing::warn!(error = %format!("{error:#}"), "could not remember the sidebar");
             }
         })
     };
 
-    for state in SidebarState::ALL {
-        let button = gtk::Button::with_label(state.label());
-        button.add_css_class("flat");
-        let apply = apply.clone();
-        let popover = popover.clone();
-        button.connect_clicked(move |_| {
-            apply(state);
-            popover.popdown();
-        });
-        choices.append(&button);
-    }
-    popover.set_child(Some(&choices));
-
-    // A sidebar's own control cannot live inside the thing it hides, so the way back is in
-    // the header. Declared above; only its behaviour belongs here.
-    {
-        let apply = apply.clone();
-        let ui = ui.clone();
-        reveal.connect_toggled(move |reveal| {
-            if reveal.is_active() {
-                let restored = crate::config::view_state(&ui.view_state)
-                    .get("sidebar_last_shown")
-                    .and_then(|key| SidebarState::from_key(key))
-                    .filter(|state| *state != SidebarState::Hidden)
-                    .unwrap_or_default();
-                apply(restored);
-            } else {
-                apply(SidebarState::Hidden);
-            }
-        });
-    }
-    split
-        .bind_property("show-sidebar", &reveal, "active")
-        .sync_create()
-        .build();
-
-    {
-        let ui = ui.clone();
-        let apply = apply.clone();
-        cog.connect_clicked(move |button| {
-            let settings = ui.settings.borrow();
-            let applied = ui.clone();
-            let accounts = accounts_page(&ui);
-            let current = crate::config::view_state(&ui.view_state)
-                .get("sidebar")
-                .and_then(|key| SidebarState::from_key(key))
-                .unwrap_or_default();
-            let sidebar_apply = apply.clone();
-            let dialog = preferences::dialog(
-                preferences::Current {
-                    timezone: settings.timezone.as_deref(),
-                    secondary: settings.secondary_timezone.as_deref(),
-                    core_start: settings.core_hours_start,
-                    core_end: settings.core_hours_end,
-                    sidebar_state: current.key(),
-                },
-                &accounts,
-                move |key, value| apply_setting(&applied, key, value),
-                move |key| {
-                    if let Some(state) = SidebarState::from_key(key) {
-                        sidebar_apply(state);
-                    }
-                },
-            );
-            drop(settings);
-            dialog.present(Some(button));
-        });
-    }
-
-    apply(
-        saved
-            .get("sidebar")
-            .and_then(|key| SidebarState::from_key(key))
-            .unwrap_or_default(),
-    );
+    apply(saved.get("sidebar").map(String::as_str) != Some("hidden"));
 
     // A window too narrow for the sidebar collapses it to an overlay rather than crushing
     // the grid. The user's own choice still wins until the window is resized again.
@@ -710,9 +620,6 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
     while let Some(child) = ui.sidebar.first_child() {
         ui.sidebar.remove(&child);
     }
-    while let Some(child) = ui.rail.first_child() {
-        ui.rail.remove(&child);
-    }
 
     let groups = match read_groups(ui) {
         Ok(groups) => groups,
@@ -729,32 +636,6 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         empty.set_wrap(true);
         ui.sidebar.append(&empty);
         return;
-    }
-
-    for (account, _) in &groups {
-        // The rail carries avatars only — but an account Google has rejected must still be
-        // visible here. A collapsed sidebar hiding a broken account is exactly the failure
-        // SPEC §2.11 exists to prevent, and it is worse than a missing one.
-        let broken = ui.needs_reconnect.borrow().contains(&account.email);
-        let button = gtk::Button::new();
-        button.add_css_class("flat");
-        button.set_child(Some(&avatar_for(account, 32)));
-        button.set_tooltip_text(Some(&if broken {
-            format!("{} — needs reconnecting", account.email)
-        } else {
-            account.email.clone()
-        }));
-        if broken {
-            button.add_css_class("error");
-        }
-        let clicked = ui.clone();
-        let email = account.email.clone();
-        button.connect_clicked(move |_| {
-            if clicked.needs_reconnect.borrow().contains(&email) {
-                start_connect(&clicked);
-            }
-        });
-        ui.rail.append(&button);
     }
 
     // One border colour per card. Generated rather than fixed, because the colours are the
@@ -774,17 +655,32 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
             // alpha() colours the border alone. Setting opacity on the widget would fade
             // its contents with it, and the text has to stay legible.
             css.push_str(&format!(
-                ".card-{} {{ border: 1px solid alpha({color}, 0.7); border-radius: 8px; \
-                 padding: 3px {}px; }}\n",
+                ".card-{} {{ border: 1px solid alpha({color}, 0.5); \
+                 background-color: alpha({color}, 0.3); border-radius: 8px; \
+                 padding: {ROW_PADDING}px {PADDING}px; }}\n",
                 crate::ui::week::class_for(color),
-                CARD_INSET - 1,
             ));
         }
     }
-    css.push_str(
-        ".sidebar-account { font-size: 1.05em; font-weight: 700; }\n\
-         .sidebar-calendar { font-size: 0.95em; }\n",
-    );
+    // A row without a card carries a transparent border and the same padding, so it
+    // occupies exactly the same box. Both kinds then take identical margins and line up in
+    // both axes on their own — rather than one being hand-compensated for the other, which
+    // is what drifted before.
+    for (account, _) in &groups {
+        let color = account.color.as_deref().unwrap_or(DEFAULT_SWATCH);
+        css.push_str(&format!(
+            ".avatar-{cls} > .contents {{ background-image: none; background-color: {color}; }}\n\
+             .avatar-{cls} {{ background-image: none; background-color: {color}; }}\n",
+            cls = crate::ui::week::class_for(color),
+        ));
+    }
+
+    css.push_str(&format!(
+        ".sidebar-account {{ font-size: 1.05em; font-weight: 700; }}\n\
+         .sidebar-calendar {{ font-size: 0.95em; }}\n\
+         .sidebar-row {{ border: 1px solid transparent; border-radius: 8px; \
+          padding: {ROW_PADDING}px {PADDING}px; }}\n"
+    ));
     ui.sidebar_palette.load_from_string(&css);
 
     for (account, calendars) in groups {
@@ -801,9 +697,11 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
         group.set_margin_top(6);
 
         let heading = gtk::Box::new(Orientation::Horizontal, 8);
-        heading.set_margin_start(CALENDAR_INDENT);
+        heading.set_margin_start(PADDING);
         heading.set_margin_end(4);
-        heading.set_margin_bottom(6);
+        // Less the row's own top padding, so the *visible* gap is the 12px asked for rather
+        // than 12 plus however much padding the row happens to carry.
+        heading.set_margin_bottom(ACCOUNT_TO_CALENDARS - PADDING);
         // No separate colour chip: the card's border already carries the account's colour,
         // and the avatar carries who it is — a picture when one has been fetched, initials
         // otherwise. Two marks for one account was one too many.
@@ -863,9 +761,10 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
             heading.append(&broken);
         }
 
-        for calendar in calendars {
+        for (index, calendar) in calendars.into_iter().enumerate() {
+            let first = index == 0;
             let row = gtk::Box::new(Orientation::Horizontal, 8);
-            row.set_margin_end(4);
+            row.set_margin_end(PADDING);
 
             let own = calendar
                 .user_color
@@ -881,18 +780,15 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
             // further left by exactly that much. Both kinds then put their swatch — and so
             // their name — on the same vertical line, which is the point: whether a
             // calendar has its own colour should not move its label.
-            // Vertical spacing is evened out the same way: a carded row already carries
-            // 3px of padding and a 1px border above it, so it takes that much less margin.
-            // Otherwise the gaps between rows breathe differently depending on colour.
-            const ROW_GAP: i32 = 6;
-            if own.eq_ignore_ascii_case(inherited) {
-                row.set_margin_start(CALENDAR_INDENT + CARD_INSET);
-                row.set_margin_top(ROW_GAP);
-            } else {
+            // Both kinds of row carry the same padding and a border of the same width —
+            // transparent on one, coloured on the other — so they need no compensating and
+            // line up in both axes by construction.
+            row.add_css_class("sidebar-row");
+            if !own.eq_ignore_ascii_case(inherited) {
                 row.add_css_class(&format!("card-{}", crate::ui::week::class_for(own)));
-                row.set_margin_start(CALENDAR_INDENT);
-                row.set_margin_top(ROW_GAP - 4);
             }
+            row.set_margin_start(0);
+            row.set_margin_top(if first { 0 } else { ROW_GAP });
             row.append(&swatch(Some(own)));
 
             let label = gtk::Label::new(Some(&calendar.summary));
@@ -933,15 +829,19 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
 /// The colour a card falls back to when neither the calendar nor its account has one.
 const DEFAULT_SWATCH: &str = "#3584e4";
 
-/// A card's own border and padding, in pixels.
+/// The sidebar's default padding.
+const PADDING: i32 = 8;
+/// The gap between an account's name and its first calendar.
+const ACCOUNT_TO_CALENDARS: i32 = 12;
+/// The gap between one calendar row and the next.
+const ROW_GAP: i32 = 2;
+/// A row's vertical padding.
 ///
-/// The number matters because a carded row's content is pushed in by exactly this much. A
-/// row without a card has to be indented by the same amount by hand, or the calendar names
-/// sit on two different vertical lines depending on whether their colour happens to differ
-/// from their account's — which is a detail the reader should never have to notice.
-const CARD_INSET: i32 = 7;
-/// Where a calendar row's content starts, measured from the account card's inner edge.
-const CALENDAR_INDENT: i32 = 8;
+/// Deliberately smaller than `PADDING`. Between two stacked rows the vertical figure is
+/// applied twice — once as the upper row's bottom padding, once as the lower row's top —
+/// while the horizontal figure is applied once against the card's edge. Using 8 in both
+/// axes therefore reads as a taller gap than a wide one, even though the number matches.
+const ROW_PADDING: i32 = 3;
 
 /// A read-only colour chip. The sidebar shows which colour a calendar is; changing it is
 /// Preferences' business.
@@ -1645,6 +1545,13 @@ pub fn avatar_for(account: &crate::store::Account, size: i32) -> adw::Avatar {
         .or(account.display_name.as_deref())
         .unwrap_or(&account.email);
     let avatar = adw::Avatar::new(size, Some(shown), true);
+    // adw::Avatar's generated background is a gradient, which reads as a shadow at this
+    // size and beside the flat swatches. A plain fill in the account's own colour is both
+    // calmer and more informative. Only for initials — a fetched picture replaces it.
+    avatar.add_css_class("flat-avatar");
+    if let Some(color) = account.color.as_deref() {
+        avatar.add_css_class(&format!("avatar-{}", crate::ui::week::class_for(color)));
+    }
     avatar.set_valign(Align::Center);
 
     if let Ok(paths) = Paths::from_env() {
@@ -1757,69 +1664,6 @@ fn status(icon: &str, title: &str, description: &str) -> adw::StatusPage {
         .title(title)
         .description(description)
         .build()
-}
-
-/// How much of the sidebar is showing. Three states, named in a menu rather than cycled by
-/// a button whose meaning would change on every press.
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
-enum SidebarState {
-    #[default]
-    Expanded,
-    Rail,
-    Hidden,
-}
-
-/// Wide enough for an avatar and its reconnect dot, and nothing else.
-const RAIL_WIDTH: f64 = 56.0;
-
-impl SidebarState {
-    const ALL: [SidebarState; 3] = [
-        SidebarState::Expanded,
-        SidebarState::Rail,
-        SidebarState::Hidden,
-    ];
-
-    fn key(self) -> &'static str {
-        match self {
-            SidebarState::Expanded => "expanded",
-            SidebarState::Rail => "rail",
-            SidebarState::Hidden => "hidden",
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            SidebarState::Expanded => "Show accounts and calendars",
-            SidebarState::Rail => "Accounts only",
-            SidebarState::Hidden => "Hide sidebar",
-        }
-    }
-
-    fn from_key(key: &str) -> Option<SidebarState> {
-        SidebarState::ALL
-            .into_iter()
-            .find(|state| state.key() == key)
-    }
-}
-
-#[cfg(test)]
-mod sidebar_state_tests {
-    use super::*;
-
-    #[test]
-    fn states_round_trip_through_the_state_file() {
-        for state in SidebarState::ALL {
-            assert_eq!(SidebarState::from_key(state.key()), Some(state));
-        }
-    }
-
-    #[test]
-    fn an_unknown_state_falls_back_to_expanded() {
-        // A hand-edited or future value must not leave the user with no sidebar and no
-        // obvious way to get it back.
-        assert_eq!(SidebarState::from_key("icons"), None);
-        assert_eq!(SidebarState::default(), SidebarState::Expanded);
-    }
 }
 
 /// Which view is on screen. The spans all share the time grid; the list views do not.
