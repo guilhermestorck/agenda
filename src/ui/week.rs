@@ -21,6 +21,8 @@ use super::vertical::{self, Core, HOUR_HEIGHT, day_height, hour_height, y_for};
 
 /// Width of the hour axis down the left.
 pub const AXIS_WIDTH: i32 = 56;
+/// The gap between the hour labels and the first day column.
+const AXIS_GAP: i32 = 6;
 /// Columns at the widest span. Labels are built once at this count and hidden when the
 /// span is narrower, rather than rebuilt on every switch.
 const MAX_DAYS: usize = 7;
@@ -139,7 +141,7 @@ impl Week {
             label.add_css_class("caption");
             label.set_valign(Align::Start);
             label.set_halign(Align::End);
-            label.set_margin_end(2);
+            label.set_margin_end(AXIS_GAP);
             label.set_size_request(-1, HOUR_HEIGHT as i32);
             secondary_axis.append(&label);
             secondary_hours.push(label);
@@ -154,7 +156,7 @@ impl Week {
             label.add_css_class("caption");
             label.set_valign(Align::Start);
             label.set_halign(Align::End);
-            label.set_margin_end(2);
+            label.set_margin_end(AXIS_GAP);
             label.set_size_request(-1, HOUR_HEIGHT as i32);
             axis.append(&label);
             hours.push(label);
@@ -253,6 +255,11 @@ impl Week {
             code.add_css_class("caption");
             code.set_size_request(AXIS_WIDTH, -1);
             code.set_valign(Align::Center);
+            // Right-aligned to sit over the hours it names, which are right-aligned against
+            // the grid. xalign, not halign: the label is given the axis's full width, so
+            // halign has nothing to push against and the text just centres inside it.
+            code.set_xalign(1.0);
+            code.set_margin_end(AXIS_GAP);
             zone_codes.append(code);
         }
         secondary_code.set_visible(false);

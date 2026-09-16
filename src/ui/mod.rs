@@ -403,22 +403,57 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
         View::Agenda => "agenda",
     });
 
-    let split = adw::OverlaySplitView::builder()
-        .sidebar(&sidebar_root)
-        .content(&ui.views)
-        .min_sidebar_width(280.0)
-        .max_sidebar_width(320.0)
+    // A Paned rather than adw::OverlaySplitView: the latter adapts the sidebar's width to
+    // the window and offers no handle, and the user wants to set the width themselves.
+    // Hiding is then the sidebar child's own visibility rather than a property of the split.
+    sidebar_root.set_size_request(SIDEBAR_MIN, -1);
+    let split = gtk::Paned::builder()
+        .orientation(Orientation::Horizontal)
+        .start_child(&sidebar_root)
+        .end_child(&ui.views)
+        .resize_start_child(false)
+        .shrink_start_child(false)
+        .position(
+            saved
+                .get("sidebar_width")
+                .and_then(|width| width.parse().ok())
+                .unwrap_or(280),
+        )
         .build();
+
+    // The ceiling is a share of the window, not a fixed number: 40% of a laptop screen and
+    // 40% of an external monitor are different widths, and the grid needs the rest either
+    // way. Clamped as the handle moves, since Paned has no maximum of its own.
+    {
+        let remember = ui.clone();
+        split.connect_position_notify(move |paned| {
+            let width = paned.width();
+            if width > 0 {
+                let ceiling = ((width as f64) * SIDEBAR_MAX_SHARE) as i32;
+                if paned.position() > ceiling {
+                    paned.set_position(ceiling);
+                    return;
+                }
+            }
+            if let Err(error) = crate::config::set_view_state(
+                &remember.view_state,
+                "sidebar_width",
+                &paned.position().to_string(),
+            ) {
+                tracing::warn!(error = %format!("{error:#}"), "could not remember the width");
+            }
+        });
+    }
 
     // Three states do not fit one toggle button: its meaning would change on every press
     // and there would be no way to skip a state. The menu names each one instead.
     // Shown or hidden. There is no third state now, so this is a boolean the toggle and
     // the breakpoint both drive, rather than an enum with a menu behind it.
     let apply = {
-        let split = split.clone();
+        let sidebar_root = sidebar_root.clone();
         let ui = ui.clone();
         std::rc::Rc::new(move |shown: bool| {
-            split.set_show_sidebar(shown);
+            sidebar_root.set_visible(shown);
             if let Err(error) = crate::config::set_view_state(
                 &ui.view_state,
                 "sidebar",
@@ -436,8 +471,8 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
         let apply = apply.clone();
         reveal.connect_toggled(move |button| apply(button.is_active()));
     }
-    split
-        .bind_property("show-sidebar", &reveal, "active")
+    sidebar_root
+        .bind_property("visible", &reveal, "active")
         .sync_create()
         .build();
 
@@ -450,7 +485,9 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
         700.0,
         adw::LengthUnit::Px,
     ));
-    breakpoint.add_setter(&split, "collapsed", Some(&true.to_value()));
+    // Hides the sidebar outright on a narrow window, where the old split would have
+    // collapsed it to an overlay. Same intent: the grid should not be crushed.
+    breakpoint.add_setter(&sidebar_root, "visible", Some(&false.to_value()));
     window.add_breakpoint(breakpoint);
 
     ui.toasts.set_child(Some(&split));
@@ -944,6 +981,11 @@ const DEFAULT_SWATCH: &str = "#3584e4";
 const PADDING: i32 = 8;
 /// How far a card's own controls sit from its border.
 const CARD_EDGE: i32 = 4;
+/// The narrowest the sidebar can be dragged. Below this an account name is an ellipsis.
+const SIDEBAR_MIN: i32 = 150;
+/// The widest, as a share of the window. A calendar whose sidebar takes half the screen is
+/// not showing a calendar.
+const SIDEBAR_MAX_SHARE: f64 = 0.4;
 /// The gap between an account's name and its first calendar.
 const ACCOUNT_TO_CALENDARS: i32 = 12;
 /// The gap between one calendar row and the next.
