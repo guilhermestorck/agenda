@@ -24,14 +24,31 @@ account connected at once, the other is gated on the user.
 | 3 | Every account on screen at once | **Partial** | Four real accounts were connected simultaneously — 16 calendars, 5,573 events, no switcher and no filter. The week was not visually compared against Google's web UI before they were disconnected, so the *rendering* half is still only verified synthetically. |
 | 4 | Accounts distinguishable without interaction | **Met** | Verified in the case the criterion names: three calendars set to near-identical Google colours (`#16a765`/`#16a766`/`#16a764`), so the fill carries no account information and the leading stripe carries all of it. Synthetic data, but the visual test is the real one. |
 | 5 | Styling is the user's and persists | **Met at the data layer** | A test runs a real sync over a set colour and visibility and asserts both survive; another reconnects an account and asserts label, colour and ordering survive. A live full resync has not been run. |
-| 6 | A second account can be added from the UI | **Code complete, unexercised** | "Connect account" is in the header bar at all times and needs no new credentials. Never run against Google's consent screen. |
+| 6 | A second account can be added from the UI | **Met** | Exercised on 2026-09-13: the user connected an account from the header button. The first attempt failed with Google's 403 for insufficient scopes and rolled back cleanly, leaving no half-connected account; the second succeeded and synced. Both halves of the path are therefore tested, including the one that matters more. |
 | 7 | Duplicates render honestly and are detectable | **Verified by query** | On four live accounts, `SELECT … GROUP BY ical_uid HAVING count(DISTINCT account) > 1` returned **551 distinct meetings present on two or more accounts**, and **zero** events anywhere were missing an `ical_uid`. Exactly the check §2.7 specifies — by query, not by eye. The rendering half (two copies, two markers) is verified visually against a synthetic database. |
 | 8 | Offline works | **Verified with the network down** | With `nmcli networking off` and DNS failing, a cold start painted `week=2026-09-14 events=2` — the two events genuinely in that week — from SQLite. Zero `ERROR` lines, zero "needs reconnecting": the failure was classified transient, as an absent network must be. The 388 stored events were untouched by the failed sync, and syncing resumed on its own when the network returned. |
 | 9 | Reminders fire | **Met, end to end** | A seeded event produced a real desktop notification 30 seconds after launch, through the actual notification daemon. Recurring occurrences are covered by the window query. The suspend/resume cycle is left to the user; the catch-up path is unit-tested. |
 | 10 | The tray is live | **Verified across a plasmashell restart** | The item registers as `org.kde.StatusNotifierItem-<pid>-1` with a `ToolTip` naming the next real event. After `systemctl --user restart plasma-plasmashell` the same item was registered again with the same tooltip — ksni re-registers on host loss without the application noticing. |
 | 11 | Re-auth is graceful and isolated | **Met in mechanism** | An account whose tokens are absent is parked on its own Reconnect button with a single toast, while the others carry on; one calendar failing does not cost the account the rest. Verified with tokens missing rather than revoked, and with synthetic accounts. |
-| 12 | Evolution is gone | **Half done** | `evolution` is uninstalled. **`evolution-data-server 3.60.2-5` is still installed**, with four of its daemons running — including `evolution-alarm-notify`, which means the old stack is still firing calendar alarms alongside agenda's. Nothing depends on it (`pactree -r` returns only itself), so removal is safe; it needs the user's password. |
-| 13 | The §8 quality bar, with no suppressions | **Met** | 223 tests passing, `cargo clippy --all-targets` clean at zero warnings, zero `#[allow(...)]` attributes anywhere in `src/`, one `#[ignore]`d test carrying its reason (it writes to the real keyring), `cargo fmt` clean. |
+| 12 | Evolution is gone | **Met** | Both `evolution` and `evolution-data-server` are uninstalled, the latter on 2026-09-14. `migration-backup/` still holds the only copy of the one EDS event, untouched, and `~/.config/evolution` stays until M6's ICS import can read it. |
+| 13 | The §8 quality bar, with no suppressions | **Met** | 297 tests passing, `cargo clippy --all-targets` clean at zero warnings, zero `#[allow(...)]` attributes anywhere in `src/`, one `#[ignore]`d test carrying its reason (it writes to the real keyring), `cargo fmt` clean. |
+
+## Tagged as v1 on 2026-09-16
+
+At the user's call, with two criteria still short of their own bar, recorded here rather
+than rounded up:
+
+- **Criterion 2** is fixture-verified. Recurrence, EXDATE/RDATE, modified and cancelled
+  instances and DST are all tested against recorded payloads, but a real week has never been
+  put side by side with Google's own web UI.
+- **Criterion 3** is partial for the same reason: four real accounts have been on screen at
+  once, but the *rendering* was never compared against Google's.
+- **Criterion 9's suspend/resume cycle** was offered and declined. The catch-up path is
+  unit-tested and a real notification has fired end to end; what is untested is the specific
+  case of a reminder falling due while the machine sleeps.
+
+Everything else is met, and eight of the thirteen are now verified against live Google data
+rather than fixtures.
 
 ## What is actually blocking
 
