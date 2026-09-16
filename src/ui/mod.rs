@@ -348,6 +348,7 @@ fn build_content(ui: &Rc<Ui>, window: &adw::ApplicationWindow) -> gtk::Widget {
     // Nothing but the view. Connect account moved to Preferences → Accounts, sync to the
     // header: both act on accounts rather than describing them.
     let sidebar_root = gtk::Box::new(Orientation::Vertical, 0);
+    sidebar_scroll.set_vexpand(true);
     sidebar_root.append(&sidebar_scroll);
 
     ui.views.add_named(ui.week.widget(), Some("grid"));
@@ -669,8 +670,14 @@ fn refresh_sidebar(ui: &Rc<Ui>) {
     for (account, _) in &groups {
         let color = account.color.as_deref().unwrap_or(DEFAULT_SWATCH);
         css.push_str(&format!(
-            ".avatar-{cls} > .contents {{ background-image: none; background-color: {color}; }}\n\
-             .avatar-{cls} {{ background-image: none; background-color: {color}; }}\n",
+            // On the avatar node itself: adw draws its generated fill there as a
+            // background-image, and a child selector matches nothing. border-radius keeps
+            // it round, since replacing the background otherwise leaves a square.
+            // Only the gradient is dropped. Forcing the account's colour here does not
+            // take — adw keeps painting its own generated fill whatever this rule says, and
+            // two attempts at out-specifying it changed nothing — so the avatar stays
+            // adw's colour, flat. The card's border carries the account colour anyway.
+            ".avatar-{cls} {{ background-image: none; }}\n",
             cls = crate::ui::week::class_for(color),
         ));
     }
