@@ -96,7 +96,12 @@ impl Grid {
     pub fn new() -> std::rc::Rc<Self> {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
+        // Homogeneous, so every column is the same width. hexpand alone only shares out
+        // what is left over after each child has claimed its natural width — which for a
+        // cell means however wide its longest chip happens to be, and a calendar whose
+        // columns move with the length of an event title is not a grid.
         let weekdays = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        weekdays.set_homogeneous(true);
         for label in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] {
             let heading = gtk::Label::new(Some(label));
             heading.set_hexpand(true);
@@ -113,6 +118,7 @@ impl Grid {
         let mut headings = Vec::with_capacity(CELLS);
         for row in 0..6 {
             let week = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            week.set_homogeneous(true);
             week.set_vexpand(true);
             for column in 0..7 {
                 let cell = gtk::Box::new(gtk::Orientation::Vertical, 1);
@@ -259,6 +265,9 @@ fn chip(item: &Item) -> gtk::Box {
     label.set_xalign(0.0);
     label.set_hexpand(true);
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    // An ellipsizing label still asks for its full text as its natural width. Capping it
+    // stops one long title from arguing for a wider column even inside a homogeneous row.
+    label.set_max_width_chars(1);
     label.add_css_class("caption");
     label.set_tooltip_text(Some(&format!("{} — {}", item.summary, item.account)));
     chip.append(&label);
